@@ -8,6 +8,6 @@ Each way's supplied geometry was converted to GeoJSON; closed building/park ways
 
 © OpenStreetMap contributors. Data licensed under ODbL 1.0: https://www.openstreetmap.org/copyright and https://opendatacommons.org/licenses/odbl/1-0/ . Preserve attribution and applicable license obligations when redistributing this extract.
 
-Vite copies this file into the production build. No public tile server, fonts, imagery or geocoding service is used at runtime. The local application server must remain reachable; no service worker/installable offline cache is implemented.
+Vite copies these files into the production build. `atlanta-static.svg` is the presentation snapshot used by the responder portal: buildings are intentionally limited to the left side, while a restrained set of roads and street labels is baked into both halves; the remaining right-side background stays black. `atlanta.geojson` remains a data-only source for local street routing and is not rendered at runtime. No public tile server, fonts or geocoding service is used at runtime; the local application server must remain reachable, and no service worker/installable offline cache is implemented.
 
 Incident coordinates remain development mock data from mockIncidents.ts. Device positions are separately and explicitly mocked in mockDeviceCoordinates.ts; they are not OSM features or surveyed hardware locations. The selected report path is recorded mock routing information, not proof of current successful delivery. Offline devices de-emphasize links; no alternate route is invented.

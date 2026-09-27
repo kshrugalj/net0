@@ -808,6 +808,11 @@ function responderIcon() {
   })
 }
 
+const STATIC_MAP_BOUNDS: L.LatLngBoundsExpression = [
+  [33.7461223, -84.410045],
+  [33.797095, -84.3539906],
+]
+
 function markerDivIcon(button: HTMLButtonElement, size: number): L.DivIcon {
   return L.divIcon({
     className: 'geo-marker-host',
@@ -1025,12 +1030,11 @@ export default function IncidentMap({
     mapRef.current = map
     L.control.zoom({ position: 'bottomleft' }).addTo(map)
     map.attributionControl.setPrefix(false)
-
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=cb1_3z1f_1_5d09fcb81bc5744792fbd5f9', {
-      attribution:
-        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-      subdomains: 'abcd',
-      maxZoom: 19,
+    map.attributionControl.addAttribution('&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>')
+    L.imageOverlay(`${import.meta.env.BASE_URL}maps/atlanta-static.svg`, STATIC_MAP_BOUNDS, {
+      opacity: 1,
+      interactive: false,
+      alt: 'Static Atlanta operational map',
     }).addTo(map)
 
     clusterLayerRef.current = L.layerGroup().addTo(map)
@@ -1088,25 +1092,6 @@ export default function IncidentMap({
       .then((data: FeatureCollection) => {
         if (controller.signal.aborted) return
         setStreetGraph(buildStreetGraph(data))
-        const overlay = {
-          type: 'FeatureCollection' as const,
-          features: data.features.filter(feature => {
-            const p = feature.properties
-            return Boolean(p?.highway || p?.building || p?.leisure)
-          }),
-        }
-        L.geoJSON(overlay, {
-          interactive: false,
-          style: feature => {
-            const p = feature?.properties
-            if (p?.highway) {
-              return { color: '#65727a', weight: p.highway === 'footway' || p.highway === 'path' ? 0.7 : 1.1, opacity: 0.34, fillOpacity: 0 }
-            }
-            return p?.leisure
-              ? { color: '#3f6250', weight: 1, fillColor: '#203a2a', fillOpacity: 0.55 }
-              : { color: '#58616c', weight: 0.4, fillColor: '#2c333c', fillOpacity: 0.7 }
-          },
-        }).addTo(map)
       })
       .catch(error => {
         if (error.name !== 'AbortError') setMapError(true)
