@@ -1,5 +1,3 @@
-import os
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -17,13 +15,19 @@ from schemas.ai import (
     PromptOut,
     PromptUpdate,
 )
-from ai.agent import build_brief, build_plan, send_check_in
+from ai.agent import build_brief, build_plan, ensure_report_ai, send_check_in
+from ai.cluster import load_clusters
+from ai.dispatcher import board_status, next_action
+from ai.llm import gemini_configured
 from schemas.agent import (
     AgentBriefOut,
     AgentRunIn,
     AgentRunOut,
     CheckInPreviewIn,
     CheckInSendIn,
+    DispatcherActionOut,
+    DispatcherBoardOut,
+    DispatcherNextIn,
 )
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
@@ -94,6 +98,21 @@ def update_prompt(name: str, payload: PromptUpdate):
     return PromptOut(name=name, content=payload.content)
 
 
+@router.get("/dispatcher/board", response_model=DispatcherBoardOut)
+def get_dispatcher_board(db: Session = Depends(get_db)):
+    return board_status(db)
+
+
+@router.post("/dispatcher/next", response_model=DispatcherActionOut)
+def post_dispatcher_next(payload: DispatcherNextIn, db: Session = Depends(get_db)):
+    return next_action(
+        db,
+        queued_report_ids=payload.queued_report_ids,
+        suppressed_user_ids=payload.suppressed_user_ids,
+        previous_action=payload.previous_action,
+    )
+
+
 @router.post("/agent/run", response_model=AgentRunOut)
 def run_agent(payload: AgentRunIn, db: Session = Depends(get_db)):
     responder_position = (
@@ -101,13 +120,22 @@ def run_agent(payload: AgentRunIn, db: Session = Depends(get_db)):
         if payload.responder_lat is not None and payload.responder_lon is not None
         else None
     )
-    plan = build_plan(db, payload.report_id, responder_position, payload.responder_route)
-    brief = build_brief(db)
+    ensure_report_ai(db)
+    groups = load_clusters(db)
+    plan = build_plan(
+        db,
+        payload.report_id,
+        responder_position,
+        payload.responder_route,
+        groups=groups,
+        ensure_ai=False,
+    )
+    brief = build_brief(db, groups=groups, ensure_ai=False)
     return AgentRunOut(
         plan=plan,
         brief=brief,
-        processed_reports=db.query(Report).count(),
-        status="ok" if os.getenv("GEMINI_API_KEY", "").strip() else "fallback",
+        processed_reports=db.query(Report).filter(Report.resolved.is_(False)).count(),
+        status="ok" if gemini_configured() and plan is not None else "fallback",
     )
 
 
@@ -118,11 +146,12 @@ def get_agent_brief(db: Session = Depends(get_db)):
 
 @router.get("/rescue-plan/{report_id}", response_model=AgentRunOut)
 def get_rescue_plan(report_id: int, db: Session = Depends(get_db)):
+    plan = build_plan(db, report_id)
     return AgentRunOut(
-        plan=build_plan(db, report_id),
+        plan=plan,
         brief=build_brief(db),
-        processed_reports=db.query(Report).count(),
-        status="ok" if os.getenv("GEMINI_API_KEY", "").strip() else "fallback",
+        processed_reports=db.query(Report).filter(Report.resolved.is_(False)).count(),
+        status="ok" if gemini_configured() and plan is not None else "fallback",
     )
 
 

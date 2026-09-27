@@ -68,3 +68,26 @@ class AgentRunOut(BaseModel):
     brief: AgentBriefOut
     processed_reports: int
     status: Literal["ok", "fallback"]
+
+
+class DispatcherNextIn(BaseModel):
+    queued_report_ids: list[int] = Field(default_factory=list, max_length=100)
+    suppressed_user_ids: list[int] = Field(default_factory=list, max_length=100)
+    previous_action: str = Field(default="", max_length=200)
+
+
+class DispatcherActionOut(BaseModel):
+    thought: str
+    type: Literal["focus", "queue", "dispatch", "message", "open_messages", "wait"]
+    report_id: int | None = None
+    report_ids: list[int] = Field(default_factory=list)
+    user_id: int | None = None
+    text: str | None = None
+    fingerprint: str
+    gemini_ok: bool = True
+
+
+class DispatcherBoardOut(BaseModel):
+    fingerprint: str
+    unresolved_count: int
+    pending_replies: int

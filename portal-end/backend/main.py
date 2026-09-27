@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from database import Base, engine
+from sqlalchemy import inspect, text
 from models import Message, Node, Report, User  # noqa: F401
 from packets import esp_manager
 from packets.packet_handler import mark_stale_nodes_offline
@@ -41,6 +42,47 @@ logger = logging.getLogger(__name__)
 OFFLINE_SWEEP_INTERVAL = 5
 
 
+def _ensure_report_columns() -> None:
+    """Add newer report columns on existing SQLite DBs without a full migration."""
+    try:
+        inspector = inspect(engine)
+        columns = {column["name"] for column in inspector.get_columns("reports")}
+    except Exception:
+        return
+    statements: list[str] = []
+    if "cluster_id" not in columns:
+        statements.append("ALTER TABLE reports ADD COLUMN cluster_id VARCHAR(64)")
+        statements.append("CREATE INDEX IF NOT EXISTS ix_reports_cluster_id ON reports (cluster_id)")
+    added_resolved = "resolved" not in columns
+    if "cluster_summary" not in columns:
+        statements.append("ALTER TABLE reports ADD COLUMN cluster_summary VARCHAR(600)")
+    if "cluster_responders" not in columns:
+        statements.append("ALTER TABLE reports ADD COLUMN cluster_responders JSON")
+    if added_resolved:
+        statements.append(
+            "ALTER TABLE reports ADD COLUMN resolved BOOLEAN NOT NULL DEFAULT 0"
+        )
+    if not statements and not added_resolved:
+        return
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+        if added_resolved:
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_reports_resolved ON reports (resolved)"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE reports SET resolved = 1 "
+                    "WHERE lower(status) IN ('resolved', 'closed')"
+                )
+            )
+    if statements:
+        logger.info("Added missing report columns: %s", ", ".join(statements))
+
+
 # -- fast api --
 # lifespan
 @asynccontextmanager
@@ -50,6 +92,12 @@ async def lifespan(app: FastAPI):
 
     # create sql tables
     Base.metadata.create_all(bind=engine)
+    _ensure_report_columns()
+
+    # Baseline clustering for existing reports (does not require Agent Mode).
+    from ai.cluster import enqueue_baseline
+
+    enqueue_baseline()
 
     # start bluetooth connection
     ble_task = asyncio.create_task(

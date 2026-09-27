@@ -48,6 +48,7 @@ class ReportUpdate(BaseModel):
     location: Optional[str] = None
     message: Optional[str] = None
     status: Optional[str] = None
+    resolved: Optional[bool] = None
     ai_priority: Optional[int] = None
     ai_category: Optional[int] = None
     ai_summary: Optional[str] = None
@@ -78,6 +79,7 @@ def list_reports(
         q = db.query(Report).order_by(Report.ai_priority.desc().nullslast(), Report.created_at.desc())
     else:
         q = db.query(Report).order_by(Report.created_at.desc())
+    q = q.filter(Report.resolved.is_(False))
     if user_id is not None:
         q = q.filter(Report.user_id == user_id)
     if status is not None:
@@ -122,6 +124,7 @@ def create_report(payload: ReportCreate, db: Session = Depends(get_db)):
         location=payload.location,
         message=payload.message,
         status=payload.status,
+        resolved=False,
         ai_priority=payload.ai_priority,
         ai_category=payload.ai_category,
         ai_summary=payload.ai_summary,
@@ -132,6 +135,9 @@ def create_report(payload: ReportCreate, db: Session = Depends(get_db)):
     db.add(report)
     db.commit()
     db.refresh(report)
+    from ai.cluster import enqueue_baseline
+
+    enqueue_baseline(report.msg_id)
     return report
 
 
@@ -143,10 +149,19 @@ def update_report(report_id: int, payload: ReportUpdate, db: Session = Depends(g
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
     data = payload.model_dump(exclude_unset=True)
+    newly_resolved = data.get("resolved") is True and not report.resolved
     for k, v in data.items():
         setattr(report, k, v)
+    if report.resolved:
+        report.cluster_id = None
+        report.cluster_summary = None
+        report.cluster_responders = None
     db.commit()
     db.refresh(report)
+    if newly_resolved:
+        from ai.cluster import enqueue_recluster
+
+        enqueue_recluster()
     return report
 
 

@@ -41,7 +41,7 @@ class ProcessResult(BaseModel):
     ai_priority: int | None = Field(default=None, ge=1, le=5)
     ai_category: int | None = None
     ai_responders: list[str] = Field(default_factory=list)
-    status: str = "stub"
+    status: str = "unavailable"
     prompt_name: str = DEFAULT_PROMPT
     prompt: str | None = None
 
@@ -79,15 +79,9 @@ def _packet_context(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _parse_llm_json(raw: str) -> ProcessResult:
-    import json
+    from ai.llm import parse_llm_json
 
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.startswith("json"):
-            text = text[4:].strip()
-
-    payload = json.loads(text)
+    payload = parse_llm_json(raw)
     responders = [
         r
         for r in (payload.get("ai_responders") or [])
@@ -103,45 +97,20 @@ def _parse_llm_json(raw: str) -> ProcessResult:
     )
 
 
-def _fallback_result(data: dict[str, Any]) -> ProcessResult:
-    category = int(data.get("category") or 0)
-    people = int(data.get("people") or 0)
-    message = str(data.get("message") or "").lower()
-    urgent = category in (2, 3, 5, 7) or any(word in message for word in ("trapped", "smoke", "flame", "unconscious", "collapsed"))
-    priority = 5 if urgent else 4 if category in (1, 4, 6) or people >= 3 else 2
-    responders: list[str] = []
-    if category in (1, 2) or people > 0 or "injur" in message:
-        responders.append("medical_ems")
-    if category in (3, 5, 7) or any(word in message for word in ("smoke", "fire", "flame", "collapse")):
-        responders.append("fire_rescue")
-    if category in (2, 5) or "trapped" in message:
-        responders.append("technical_sar")
-    if category == 4 or any(word in message for word in ("water", "flood")):
-        responders.append("coast_guard")
-    return ProcessResult(
-        ai_summary=f"{people or 'Unknown number of'} people reported a {message or 'possible emergency'}.",
-        ai_priority=priority,
-        ai_category=category,
-        ai_responders=responders or ["medical_ems"],
-        status="fallback",
-    )
-
-
 def process_packet(
     data: dict[str, Any],
     *,
     prompt_name: str = DEFAULT_PROMPT,
     include_prompt: bool = False,
 ) -> ProcessResult:
-    """Build prompt from packet JSON and run AI process (stub until LLM is wired)."""
+    """Build prompt from packet JSON and run Gemini process."""
     context = _packet_context(data)
     prompt = prompt_store.render(prompt_name, **context)
 
-    raw = call_llm(prompt)
+    raw = call_llm(prompt, system="Return only valid JSON for SOS report triage.")
 
     if raw is None:
-        result = _fallback_result(data)
-        result.prompt_name = prompt_name
+        result = ProcessResult(status="unavailable", prompt_name=prompt_name)
     else:
         try:
             result = _parse_llm_json(raw)
@@ -160,8 +129,8 @@ def process_packet(
 
 
 def apply_result_to_report(report: ReportRow, result: ProcessResult) -> None:
-    if result.status not in ("ok", "fallback"):
-        # Don't wipe fields when the LLM is still a stub / failed.
+    if result.status != "ok":
+        # Never persist stub / fallback / failed AI as if it were model output.
         return
     report.ai_summary = result.ai_summary
     report.ai_priority = result.ai_priority

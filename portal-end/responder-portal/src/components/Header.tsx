@@ -1,6 +1,7 @@
+import type { PortalLink } from '../hooks/useLivePortal'
 import type { NetworkNode } from '../types/network'
 
-export default function Header({ nodes }: { nodes: NetworkNode[] }) {
+export default function Header({ nodes, link = 'live' }: { nodes: NetworkNode[]; link?: PortalLink }) {
   const onlineCount = nodes.filter(node => node.status === 'ONLINE').length
   const healthy = nodes.length > 0 && onlineCount === nodes.length
   const hasAny = nodes.length > 0
@@ -16,6 +17,12 @@ export default function Header({ nodes }: { nodes: NetworkNode[] }) {
         <span className="portal-name">Responder Center</span>
       </div>
       <div className="header-status">
+        {link !== 'live' && (
+          <span className={`node-status ${link === 'connecting' ? 'degraded' : 'down'}`}>
+            <span className="status-dot" aria-hidden />
+            {link === 'connecting' ? 'Connecting' : 'Server unreachable'}
+          </span>
+        )}
         <span className={`node-status ${statusClass}`}>
           <span className="status-dot" aria-hidden />
           {label}

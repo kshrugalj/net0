@@ -1,58 +1,52 @@
-const API_BASE = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') || 'http://localhost:8000'
+import { request } from './client'
 
-export interface ReportApi {
+export interface ApiReportUser {
+  user_id: number
+  name?: string | null
+  phone?: string | null
+  origin?: number | null
+}
+
+/** Mirrors `ReportDetail` from portal-end/backend/schemas/report.py. */
+export interface ApiReport {
   id: number
   msg_id: number
+  attempt?: number | null
   user_id: number
-  category: number
-  people: number
-  location: string
-  status: string
-  ai_priority: number | null
-  ai_responders: string[] | null
-  cluster_id: string | null
-  attempt: number
-  origin: number
-  path: number[]
-  gps_lat: number | null
-  gps_lon: number | null
-  gps_accuracy: number | null
-  message: string
-  ai_summary: string | null
-  created_at: string
-  user: { user_id: number; name: string; phone: string; origin?: number | null }
+  origin?: number | null
+  path?: number[] | null
+  category?: number | null
+  people?: number | null
+  needs?: number | null
+  gps_lat?: number | null
+  gps_lon?: number | null
+  gps_accuracy?: number | null
+  location?: string | null
+  message?: string | null
+  status?: string | null
+  resolved?: boolean | null
+  ai_priority?: number | null
+  ai_category?: number | null
+  ai_summary?: string | null
+  ai_responders?: string[] | null
+  cluster_id?: string | null
+  cluster_summary?: string | null
+  cluster_responders?: string[] | null
+  created_at?: string | null
+  acked_at?: string | null
+  user?: ApiReportUser | null
 }
 
-export interface NodeApi {
-  node_id: number
-  role: number
-  status: string
-  battery: number | null
-  last_seen: string | null
-  path: number[]
+export function listReports(limit = 500, sort: 'created_at' | 'priority' = 'created_at'): Promise<ApiReport[]> {
+  return request(`/api/reports?limit=${limit}&sort=${sort}`)
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { Accept: 'application/json', ...init?.headers },
-  })
-  if (!response.ok) throw new Error((await response.text()) || `Request failed (${response.status})`)
-  return response.json() as Promise<T>
-}
-
-export function listReports(): Promise<ReportApi[]> {
-  return request('/api/reports?limit=500&sort=priority')
-}
-
-export function listNodes(): Promise<NodeApi[]> {
-  return request('/api/nodes')
-}
-
-export function updateReport(reportId: number, payload: { status?: string }): Promise<ReportApi> {
-  return request(`/api/reports/${reportId}`, {
+export function updateReport(
+  id: number,
+  patch: { status?: string; resolved?: boolean },
+): Promise<ApiReport> {
+  return request(`/api/reports/${id}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(patch),
   })
 }

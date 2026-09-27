@@ -1,22 +1,12 @@
 import type { PortalMessage } from '../types/message'
+import { ensureUtcIso } from '../utils/serverTime'
+import { request } from './client'
 
-const API_BASE = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') || 'http://localhost:8000'
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      Accept: 'application/json',
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...init?.headers,
-    },
-  })
-  if (!response.ok) {
-    const detail = await response.text().catch(() => '')
-    throw new Error(detail || `Request failed (${response.status})`)
+function normalizeMessage(message: PortalMessage): PortalMessage {
+  return {
+    ...message,
+    created_at: ensureUtcIso(message.created_at) ?? message.created_at,
   }
-  if (response.status === 204) return undefined as T
-  return response.json() as Promise<T>
 }
 
 export function listMessages(opts?: {
@@ -29,7 +19,9 @@ export function listMessages(opts?: {
   if (opts?.direction) params.set('direction', opts.direction)
   if (opts?.limit != null) params.set('limit', String(opts.limit))
   const query = params.toString()
-  return request(`/api/messages${query ? `?${query}` : ''}`)
+  return request<PortalMessage[]>(`/api/messages${query ? `?${query}` : ''}`).then(messages =>
+    messages.map(normalizeMessage),
+  )
 }
 
 export function sendMessage(payload: {
@@ -38,7 +30,7 @@ export function sendMessage(payload: {
   sender?: string
   reply_to?: number
 }): Promise<PortalMessage> {
-  return request('/api/messages/send', {
+  return request<PortalMessage>('/api/messages/send', {
     method: 'POST',
     body: JSON.stringify({
       user_id: payload.user_id,
@@ -46,7 +38,7 @@ export function sendMessage(payload: {
       sender: payload.sender ?? 'Portal',
       ...(payload.reply_to != null ? { reply_to: payload.reply_to } : {}),
     }),
-  })
+  }).then(normalizeMessage)
 }
 
 export interface PortalUser {

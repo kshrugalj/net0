@@ -138,6 +138,7 @@ def seed(data, mode="merge"):
                 created_at=parse_dt(r.get("created_at")) or utcnow(),
                 acked_at=parse_dt(r.get("acked_at")),
                 status=r.get("status", "received"),
+                resolved=bool(r.get("resolved", str(r.get("status", "")).lower() in {"resolved", "closed"})),
                 ai_priority=r.get("ai_priority"),
                 ai_category=r.get("ai_category"),
                 ai_summary=r.get("ai_summary"),

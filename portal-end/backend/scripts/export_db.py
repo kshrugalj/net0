@@ -66,6 +66,7 @@ def export_json():
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "acked_at": r.acked_at.isoformat() if r.acked_at else None,
                 "status": r.status,
+                "resolved": bool(r.resolved),
                 "ai_priority": r.ai_priority,
                 "ai_category": r.ai_category,
                 "ai_summary": r.ai_summary,

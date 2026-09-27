@@ -77,7 +77,7 @@ static inline size_t bkEncodeReport(const Packet &p, uint8_t *out) {
   w.f32(p.has_gps ? p.lat : 0);
   w.f32(p.has_gps ? p.lon : 0);
   w.u16(p.has_gps ? p.accuracy_m : 0);
-  w.str("", BK_NAME_MAX);
+  w.str(p.name, BK_NAME_MAX);
   w.str("", BK_PHONE_MAX);
   w.str(p.location, BK_LOCATION_MAX);
   w.str(p.message, BK_REPORT_MSG_MAX);

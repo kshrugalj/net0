@@ -39,6 +39,7 @@ def export_db(db: Session = Depends(get_db)):
             "gps_lat": r.gps_lat, "gps_lon": r.gps_lon, "gps_accuracy": r.gps_accuracy,
             "location": r.location, "message": r.message, "created_at": r.created_at.isoformat() if r.created_at else None,
             "acked_at": r.acked_at.isoformat() if r.acked_at else None, "status": r.status,
+            "resolved": bool(r.resolved),
             "ai_priority": r.ai_priority, "ai_category": r.ai_category, "ai_summary": r.ai_summary,
             "ai_responders": r.ai_responders,
         }
@@ -154,7 +155,9 @@ def import_db(payload: ImportPayload, db: Session = Depends(get_db)):
             gps_lat=r.get("gps_lat"), gps_lon=r.get("gps_lon"), gps_accuracy=r.get("gps_accuracy"),
             location=r.get("location",""), message=r.get("message",""),
             created_at=parse_dt2(r.get("created_at")) or utcnow(), acked_at=parse_dt2(r.get("acked_at")),
-            status=r.get("status","received"), ai_priority=r.get("ai_priority"), ai_category=r.get("ai_category"), ai_summary=r.get("ai_summary"),
+            status=r.get("status","received"),
+            resolved=bool(r.get("resolved", str(r.get("status", "")).lower() in {"resolved", "closed"})),
+            ai_priority=r.get("ai_priority"), ai_category=r.get("ai_category"), ai_summary=r.get("ai_summary"),
             ai_responders=r.get("ai_responders"),
         )
         # if merge and existing, skip already handled; if replace, insert

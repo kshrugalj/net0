@@ -12,8 +12,7 @@ from datetime import timedelta
 
 from sqlalchemy.orm import Session
 
-from ai.process import enqueue_process_report
-from ai.agent import enqueue_agent
+from ai.cluster import enqueue_baseline
 from database import SessionLocal
 from models.message import Message as MessageRow
 from models.node import Node, utcnow
@@ -23,7 +22,7 @@ from packets.packet_codec import encode_downlink, frame_packet
 from packets.serial_schema import Ack, Heartbeat, Report, UserReply
 
 # -- configuration --
-HEARTBEAT_TIMEOUT_S = 15
+HEARTBEAT_TIMEOUT_S = 35
 
 # -- logging --
 logger = logging.getLogger(__name__)
@@ -69,8 +68,7 @@ def handle_uplink(
         db.close()
 
     if new_report_msg_id is not None:
-        enqueue_process_report(new_report_msg_id)
-        enqueue_agent(new_report_msg_id)
+        enqueue_baseline(new_report_msg_id)
 
 
 def mark_stale_nodes_offline() -> int:
@@ -228,6 +226,7 @@ def _handle_report(
         location=pkt.location,
         message=pkt.message,
         status="received",
+        resolved=False,
     )
 
     report.acked_at = utcnow()

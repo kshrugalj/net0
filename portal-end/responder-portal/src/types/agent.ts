@@ -3,10 +3,9 @@ import type { NetworkNode } from './network'
 
 export interface AgentModeDockProps {
   active: boolean
-  incidents: Incident[]
+  incidents?: Incident[]
   selectedId: string | null
-  nodes: NetworkNode[]
-  responderLive?: boolean
+  nodes?: NetworkNode[]
   plan?: RescuePlan | null
   brief?: AgentBrief | null
   loading?: boolean

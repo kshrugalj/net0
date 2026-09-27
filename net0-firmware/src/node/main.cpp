@@ -72,6 +72,7 @@ uint32_t nodeSendReport(const ReportInfo &r) {
   p.lat = r.gps.lat;
   p.lon = r.gps.lon;
   p.accuracy_m = r.gps.accuracy_m;
+  strlcpy(p.name, r.name, NAME_LEN);
   strlcpy(p.location, r.location, LOCATION_LEN);
   strlcpy(p.message, r.message, MESSAGE_LEN);
 
@@ -153,7 +154,7 @@ bool nodeReportStatus(uint32_t msgId, bool &delivered, uint8_t &attempts) {
   return e != nullptr;
 }
 
-// Resend every unACKed report whose timer is up. Backoff: 3 s, 6 s, 12 s ... 30 s.
+// Resend every unACKed report whose timer is up. Backoff: 3 s, 6 s, 12 s, 15 s ...
 static void retryPending() {
   uint32_t now = millis();
   for (Pending &e : pending) {
@@ -176,12 +177,17 @@ static void retryPending() {
 }
 
 // ---------- mesh receive ----------
-static void handleRx(RxItem &item) {
+// Runs under the lock. Returns true if the (updated) packet should be forwarded;
+// loop() does that after releasing the lock so the web servers aren't blocked.
+static bool handleRx(RxItem &item) {
   Packet &p = item.pkt;
-  if (!isValid(p)) return;
-  if (p.origin == NODE_ID || p.last_hop == NODE_ID) return;
-  if (!isNeighbor(p.last_hop)) return;  // filter BEFORE dedup, or a non-neighbor copy would "use up" the id
-  if (alreadySeen(p)) return;
+  if (!isValid(p)) return false;
+  if (p.last_hop == NODE_ID) return false;
+  if (!isNeighbor(p.last_hop)) return false;  // filter BEFORE dedup, or a non-neighbor copy would "use up" the id
+  learnNeighbor(p.last_hop, item.mac);
+  if (p.type == PKT_HEARTBEAT && p.origin == GATEWAY_ID) return false;  // gateway hello: only there to learn its MAC
+  if (p.origin == NODE_ID) return false;
+  if (alreadySeen(p)) return false;
   markSeen(p);
 
   Serial.printf("[rx] %s id=%08X attempt=%u origin=%u from=%u ttl=%u rssi=%d\n",
@@ -194,7 +200,7 @@ static void handleRx(RxItem &item) {
       if (!e->delivered) Serial.printf("[ack] %08X delivered after %u attempt(s)\n", p.ref_id, e->pkt.attempt + 1);
       e->delivered = true;
       if (ChatSlot *c = findChat(p.ref_id, true)) c->e.delivered = true;
-      return;
+      return false;
     }
   }
 
@@ -205,17 +211,21 @@ static void handleRx(RxItem &item) {
       addChat(p.user_id, p.msg_id, p.ref_id, false, p.location, p.message);
       Serial.printf("[msg] %08X for user %u from \"%s\": %s\n", p.msg_id, p.user_id, p.location, p.message);
     }
-    if (p.target == NODE_ID) return;  // it was only for us: no need to pass it on
+    if (p.target == NODE_ID) return false;  // it was only for us: no need to pass it on
   }
 
   if (p.ttl <= 1) {
     Serial.println("[rx] ttl expired, not forwarding");
-    return;
+    return false;
   }
   p.ttl--;
   p.last_hop = NODE_ID;
   if (p.path_len < MAX_PATH) p.path[p.path_len++] = NODE_ID;
+  return true;
+}
 
+// Called WITHOUT the lock: the jitter wait doesn't touch shared state.
+static void forward(const Packet &p) {
   delay(random(10, 61));  // jitter so neighbors don't all transmit at once
   sendPacket(p);
   Serial.printf("[fwd] %s id=%08X ttl=%u\n", typeName(p.type), p.msg_id, p.ttl);
@@ -239,9 +249,16 @@ void setup() {
 void loop() {
   dns.processNextRequest();
 
+  // One packet at a time, so the lock is released during each forward's jitter wait.
+  static RxItem item;  // ~500 B, keep it off the loop task's stack
+  while (xQueueReceive(rxQueue, &item, 0) == pdTRUE) {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    bool fwd = handleRx(item);
+    xSemaphoreGive(lock);
+    if (fwd) forward(item.pkt);
+  }
+
   xSemaphoreTake(lock, portMAX_DELAY);
-  RxItem item;
-  while (xQueueReceive(rxQueue, &item, 0) == pdTRUE) handleRx(item);
   retryPending();
   if (millis() - lastHeartbeat >= HEARTBEAT_MS) {
     lastHeartbeat = millis();

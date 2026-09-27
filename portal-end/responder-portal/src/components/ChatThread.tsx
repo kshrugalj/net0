@@ -3,23 +3,47 @@ import type { FormEvent } from 'react'
 import { useConversation } from '../hooks/useConversation'
 import { MESSAGE_MAX } from '../types/message'
 import type { PortalMessage } from '../types/message'
+import { parseServerTime } from '../utils/serverTime'
 
 interface Props {
   userId: number
   active?: boolean
   compact?: boolean
+  composeText?: string | null
 }
 
 function formatTime(iso: string): string {
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  const ms = parseServerTime(iso)
+  if (ms == null) return ''
+  return new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
-export default function ChatThread({ userId, active = true, compact = false }: Props) {
+export default function ChatThread({ userId, active = true, compact = false, composeText = null }: Props) {
   const { messages, loading, sending, error, send } = useConversation(userId, active)
   const [draft, setDraft] = useState('')
   const scroller = useRef<HTMLDivElement>(null)
+  const typed = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!composeText) {
+      if (typed.current) {
+        typed.current = null
+        setDraft('')
+      }
+      return
+    }
+    if (typed.current === composeText) return
+    typed.current = composeText
+    let index = 0
+    const step = Math.max(1, Math.ceil(composeText.length / 36))
+    setDraft('')
+    const timer = window.setInterval(() => {
+      index = Math.min(composeText.length, index + step)
+      setDraft(composeText.slice(0, index))
+      if (index >= composeText.length) window.clearInterval(timer)
+    }, 28)
+    return () => window.clearInterval(timer)
+  }, [composeText])
 
   useEffect(() => {
     const el = scroller.current
@@ -53,6 +77,7 @@ export default function ChatThread({ userId, active = true, compact = false }: P
       {error && <p className="chat-error">{error}</p>}
       <form className="chat-composer" onSubmit={handleSubmit}>
         <textarea
+          data-chat-input
           value={draft}
           onChange={event => setDraft(event.target.value.slice(0, MESSAGE_MAX))}
           placeholder="Message…"

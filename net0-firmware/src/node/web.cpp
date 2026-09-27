@@ -209,21 +209,23 @@ static bool validCategory(long c) {
   return c >= 0 && c <= 8;
 }
 
-// POST /send  (form fields: category, people, location, message, id, lat, lon, acc)
+// POST /send  (form fields: name, category, people, location, message, id, lat, lon, acc)
 static esp_err_t handleSend(httpd_req_t *req) {
   char body[2048];
   if (!readBody(req, body, sizeof(body))) return sendJson(req, "400 Bad Request", "{\"error\":\"Report too long or upload failed\"}");
 
-  char location[LOCATION_LEN * 3], message[MESSAGE_LEN * 3], idArg[8], lat[16], lon[16], acc[8];
+  char name[NAME_LEN * 3], location[LOCATION_LEN * 3], message[MESSAGE_LEN * 3], idArg[8], lat[16], lon[16], acc[8];
   char categoryArg[4], peopleArg[6];
   getParam(body, "category", categoryArg, sizeof(categoryArg));
   getParam(body, "people", peopleArg, sizeof(peopleArg));
+  getParam(body, "name", name, sizeof(name));
   getParam(body, "location", location, sizeof(location));
   getParam(body, "message", message, sizeof(message));
   getParam(body, "id", idArg, sizeof(idArg));
   getParam(body, "lat", lat, sizeof(lat));
   getParam(body, "lon", lon, sizeof(lon));
   getParam(body, "acc", acc, sizeof(acc));
+  trim(name);
   trim(location);
   trim(message);
   long category = atol(categoryArg);
@@ -242,8 +244,8 @@ static esp_err_t handleSend(httpd_req_t *req) {
   }
 
   uint16_t userId = resolveUserId(req, parseUserId(idArg));
-  uint32_t msgId = nodeSendReport({userId, (uint8_t)category, (uint8_t)people, location, message, gps});
-  Serial.printf("[web] report %08X from user %u, category %ld, %ld people, ", msgId, userId, category, people);
+  uint32_t msgId = nodeSendReport({userId, (uint8_t)category, (uint8_t)people, name, location, message, gps});
+  Serial.printf("[web] report %08X from user %u (%s), category %ld, %ld people, ", msgId, userId, name, category, people);
   if (gps.valid)
     Serial.printf("GPS %.6f, %.6f (+/-%u m)\n", gps.lat, gps.lon, gps.accuracy_m);
   else

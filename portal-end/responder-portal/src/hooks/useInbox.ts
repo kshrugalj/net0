@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { listMessages, listUsers } from '../api/messages'
 import type { ConversationSummary, PortalMessage } from '../types/message'
 
-const INBOX_POLL_MS = 12000
+const INBOX_POLL_MS = 4000
 
 export interface InboxSeedUser {
   userId: number
@@ -68,7 +68,7 @@ export function useInbox(active: boolean, seeds: InboxSeedUser[]) {
     setError(null)
     try {
       const [remote, users] = await Promise.all([
-        listMessages({ limit: 200 }),
+        listMessages({ limit: 500 }),
         listUsers().catch(() => [] as Awaited<ReturnType<typeof listUsers>>),
       ])
       setMessages(remote)
@@ -105,5 +105,5 @@ export function useInbox(active: boolean, seeds: InboxSeedUser[]) {
     [messages, nameById, seeds],
   )
 
-  return { conversations, loading, error, refresh }
+  return { conversations, messages, loading, error, refresh }
 }

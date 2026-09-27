@@ -29,24 +29,27 @@ Phone → Node (Wi-Fi AP + web form) → other Node(s) relaying → Gateway ESP3
   `platform = https://github.com/pioarduino/platform-espressif32/releases/download/stable/platform-espressif32.zip`
   The official `platform = espressif32` ships core 2.x = ESP-NOW v1 only. **Don't use it.**
 - **Transport:** ESP-NOW **v2** (payload up to 1470 bytes; v1 max is 250). Print `esp_now_get_version()` at boot and warn if < 2.
-- **Routing:** **flooding** over broadcast (`FF:FF:FF:FF:FF:FF`). Every node rebroadcasts a packet it hasn't seen before, exactly once. Loop protection:
+- **Routing:** **flooding**. Every node re-sends a packet it hasn't seen before, exactly once.
+  - **Unicast to live neighbors** (`mesh.h` `sendPacket`): a broadcast gets no radio ACK, so each copy is sent as a unicast to every neighbor heard in the last 35 s (MAC learned from any packet it sent us, `learnNeighbor`), skipping neighbors already in the packet's `path`. The radio ACKs and auto-retries unicasts. With no live neighbor known (just booted) it broadcasts (`FF:FF:FF:FF:FF:FF`), which is how others discover it.
+  - The gateway sends a 1-hop hello (heartbeat, ttl 1, origin 0) every 10 s so nodes learn its MAC; nodes don't forward or log it.
+  - Loop protection:
   - **Duplicate suppression:** a random 32-bit `msg_id` per message; each node keeps a ring buffer of the last 64 IDs.
   - **TTL:** decremented each hop; drop the packet when it reaches ≤ 1.
   - **Jitter:** random 10–60 ms delay before rebroadcasting to avoid collisions.
 - **Separate firmware** for nodes vs. gateway, in one PlatformIO project:
   - `src/node/`: **every node is BOTH access and relay** (no role flag). Each runs a Wi-Fi AP `NET0-<id>`, a captive-portal DNS, and floods/relays packets. `main.cpp` = mesh + retries, `web.cpp` = web servers (ESP-IDF `esp_http_server` on :80 and `esp_https_server` on :443), `node.h` = the locked interface between them (web servers run on their own tasks). Web files in `data/` (`index.html`, `style.css`, `app.js`, plus `cert.pem`/`key.pem`) live on LittleFS.
-  - `src/gateway/`: never relays mesh traffic; only transmits ACKs for reports the backend saved. Dedups, then queues each packet for the backend and a background task sends it over **BLE** (queue of 16; a frame is removed only after it's sent; reports always queue, retries of an already-queued report are skipped, heartbeats only queue while a laptop is connected) (`bluetooth.cpp`, encoded by `backend_codec.h`) and also prints a JSON debug line over USB serial. Uses `huge_app.csv` partitions (Wi-Fi + BLE is too big for the default).
+  - `src/gateway/`: never relays mesh traffic; only transmits ACKs for reports the backend saved (and responder messages). Dedups, then queues each packet for the backend and a background task sends it over **BLE** (queue of 16; a frame is removed only after it's sent; reports always queue, retries of an already-queued report are skipped, heartbeats only queue while a laptop is connected) (`bluetooth.cpp`, encoded by `backend_codec.h`) and also prints a JSON debug line over USB serial. Uses `huge_app.csv` partitions (Wi-Fi + BLE is too big for the default). **Radio watchdog:** its ESP-NOW can go deaf after an ACK flood while BLE is busy (only a reboot fixes it), so if it has heard the mesh since boot and then hears nothing for 30 s it calls `ESP.restart()`.
   - `include/packet.h`: **shared** packet struct + constants. Any packet format change happens here only.
 - **Per-board config** lives in `platformio.ini` `build_flags`, one `[env:...]` per physical board. Don't hardcode per-board values in `.cpp` files.
-- **Wi-Fi channel:** fixed at 6 on every board (the AP and ESP-NOW must share one channel). `WiFi.setSleep(false)` on nodes; the gateway must use `setSleep(true)` because BLE is on (ESP32 aborts otherwise).
+- **Wi-Fi channel:** fixed at 6 on every board (the AP and ESP-NOW must share one channel). `WiFi.setSleep(false)` on nodes; the gateway must use `setSleep(true)` because BLE is on (ESP32 aborts otherwise). Wi-Fi and BLE share the gateway's radio, so it sets `esp_coex_preference_set(ESP_COEX_PREFER_WIFI)` to give ESP-NOW priority.
 - **ESP-NOW receive callback:** only copy the packet into a FreeRTOS queue. Process it in `loop()`. Never do slow work (Serial, delays, sends) inside the callback.
 - **Callback signature (core 3.x):** `void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len)`. RSSI comes from `info->rx_ctrl->rssi`.
 
-## Packet (`include/packet.h`, packed struct, version 6)
+## Packet (`include/packet.h`, packed struct, version 7)
 | Field | Type | Notes |
 |---|---|---|
 | magic | uint16 | `0x4E30`, drop anything else |
-| version | uint8 | `6` (every board must run the same version) |
+| version | uint8 | `7` (every board must run the same version) |
 | type | uint8 | `1` = report, `2` = user_reply, `3` = heartbeat, `4` = ack, `5` = message. **Same numbers as the backend's `packet_codec.py`.** |
 | msg_id | uint32 | random, never 0. **Same on every retry of a report / user_reply / message** |
 | attempt | uint8 | 0 = first send, +1 per retry |
@@ -60,16 +63,18 @@ Phone → Node (Wi-Fi AP + web form) → other Node(s) relaying → Gateway ESP3
 | people | uint8 | reports: people needing help (0 = unknown) |
 | has_gps, lat, lon, accuracy_m | uint8, float, float, uint16 | reports: phone GPS fix (HTTPS page only) |
 | path_len, path[8] | uint8 | node IDs the packet passed through, in order |
+| name | char[32] | report: name typed on the phone (saved as the user's name in the backend) |
 | location | char[64] | report: user-typed location; message: sender name (≤ 31 chars) |
 | message | char[400] | report details / user_reply text / message text |
 
 Nodes send a heartbeat every 10 s (used for the node-status panel on the dashboard).
 
 ## Delivery: retries + ACKs
-- The origin node keeps each report in a pending list (8 slots) and resends it with the **same `msg_id`** and `attempt + 1` until it hears an ACK: waits 3 s, 6 s, 12 s … capped at 30 s, up to 255 attempts.
+- The origin node keeps each report in a pending list (8 slots) and resends it with the **same `msg_id`** and `attempt + 1` until it hears an ACK: waits 3 s, 6 s, 12 s … capped at 15 s, up to 255 attempts.
 - Dedup (relays and gateway) is keyed on **(msg_id, attempt)**, so a retry is forwarded again instead of being dropped as a duplicate.
-- The gateway forwards every attempt to the backend. The backend dedups on `msg_id` (unique in SQL) and ACKs every copy over BLE.
-- The gateway floods a `PKT_ACK` (`ref_id` = report msg_id). The origin node marks the report delivered and stops retrying. The phone polls `GET /status?id=<hex msg_id>` to show "Delivered".
+- The gateway forwards every attempt to the backend (except retries it already knows were saved, see below). The backend dedups on `msg_id` (unique in SQL) and ACKs every copy over BLE.
+- The gateway floods a `PKT_ACK` (`ref_id` = report msg_id) 3 times, 400 ms apart (same ack msg_id, attempt 0/1/2), since a single broadcast is easily lost. The origin node marks the report delivered and stops retrying.
+- The gateway remembers the last 32 msg_ids the backend ACKed. If a retry of one of those arrives (our ACK was lost), it re-floods the ACK itself instead of sending the copy to the backend again. The phone polls `GET /status?id=<hex msg_id>` to show "Delivered".
 - **user_reply** (phone → responders) uses the exact same pending list, retries and ACK as a report.
 - Heartbeats are not retried.
 
@@ -100,16 +105,16 @@ Browsers only share location with secure (`https://`) pages.
 ## Board map / demo topology
 Every board sits on one table, so they can all hear each other directly. The `NEIGHBORS` build flag fakes a topology by accepting packets only from the listed `last_hop` IDs (`0` = the gateway, `*` = accept from anyone). ACKs travel gateway → nodes, so list links in both directions. This forces real multi-hop delivery and makes the failover demo possible.
 
-Current setup: 3 boards in a line, `node2 → node1 → gateway`. Every node is access + relay (phones can join any `NET0-<id>`).
+Current setup: 6 boards. `node4`/`node5 → node3 → node1`/`node2 → gateway`. node3 has two routes, so unplugging node1 or node2 shows failover. Every node is access + relay (phones can join any `NET0-<id>`). Set every `NEIGHBORS` to `*` to let everyone hear everyone.
 
 | Env | NODE_ID | Role | NEIGHBORS |
 |---|---|---|---|
-| gateway | 0 | Gateway on laptop | 1 |
-| node1 | 1 | Access + relay | 0,2 |
-| node2 | 2 | Access + relay | 1 |
-| node3 | 3 | Spare (access + relay) | * |
-| node4 | 4 | Spare (access + relay) | * |
-| node5 | 5 | Spare (access + relay) | * |
+| gateway | 0 | Gateway on laptop | 1,2 |
+| node1 | 1 | Access + relay | 0,3 |
+| node2 | 2 | Access + relay | 0,3 |
+| node3 | 3 | Access + relay | 1,2,4,5 |
+| node4 | 4 | Access + relay | 3 |
+| node5 | 5 | Access + relay | 3 |
 
 ## Gateway → backend contract (BLE)
 The backend (`portal-end/backend/packets/esp_manager.py`, Ishan) scans for BLE service `7b2f3a91-8c64-4f2e-a7d1-91c8e7b5d421`, device `Gateway-Node`, and subscribes to notifications on characteristic `a12b3c45-6789-4def-8123-456789abcdef`. The gateway keeps advertising while connected, so up to 3 laptops can connect at once (otherwise the first connection hides it from everyone else). These UUIDs are BLE identifiers, unrelated to the mesh `NODE_ID`.

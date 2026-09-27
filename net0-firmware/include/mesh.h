@@ -23,6 +23,7 @@ static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 struct RxItem {
   Packet pkt;
   int8_t rssi;
+  uint8_t mac[6];  // radio address of the board that sent this copy
 };
 static QueueHandle_t rxQueue;
 
@@ -31,6 +32,7 @@ static void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len
   RxItem item;
   memcpy(&item.pkt, data, sizeof(Packet));
   item.rssi = info->rx_ctrl->rssi;
+  memcpy(item.mac, info->src_addr, 6);
   xQueueSend(rxQueue, &item, 0);  // never block inside the callback
 }
 
@@ -87,6 +89,71 @@ static bool isNeighbor(uint8_t id) {
   return false;
 }
 
+// ---------- live neighbors (who we send to) ----------
+// A broadcast gets no radio-level ACK, so a missed frame is simply lost. A
+// unicast is ACKed by the receiver's radio and automatically resent if not.
+// So instead of one broadcast we send one unicast copy to each neighbor we've
+// heard recently. We learn a neighbor's MAC from any packet it sends us.
+// If we don't know any live neighbor yet (just booted), we broadcast, which is
+// also how the others discover us.
+#define MAX_LIVE           8
+#define NEIGHBOR_TIMEOUT_MS 35000  // ~3 missed heartbeats
+
+struct LiveNeighbor {
+  bool used;
+  uint8_t id;
+  uint8_t mac[6];
+  uint32_t lastHeard;
+};
+static LiveNeighbor live[MAX_LIVE];
+// learnNeighbor() runs in loop(); sendPacket() may also run on web server tasks.
+static portMUX_TYPE liveLock = portMUX_INITIALIZER_UNLOCKED;
+
+static void addPeer(const uint8_t *mac) {
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, mac, 6);
+  peer.channel = 0;  // current channel
+  peer.ifidx = WIFI_IF_STA;
+  peer.encrypt = false;
+  esp_now_add_peer(&peer);
+}
+
+// Call for every valid packet from an accepted neighbor (before dedup: a
+// duplicate still proves the neighbor is alive).
+static void learnNeighbor(uint8_t id, const uint8_t *mac) {
+  uint32_t now = millis();
+  LiveNeighbor *slot = nullptr;
+  bool isNew = false;
+  uint8_t oldMac[6];
+
+  portENTER_CRITICAL(&liveLock);
+  for (LiveNeighbor &n : live)
+    if (n.used && n.id == id) { slot = &n; break; }
+  if (!slot) {  // new: take a free slot, else the one heard from longest ago
+    isNew = true;
+    slot = &live[0];
+    for (LiveNeighbor &n : live) {
+      if (!n.used) { slot = &n; break; }
+      if ((int32_t)(n.lastHeard - slot->lastHeard) < 0) slot = &n;
+    }
+  }
+  bool hadMac = slot->used;
+  memcpy(oldMac, slot->mac, 6);
+  bool macChanged = hadMac && memcmp(slot->mac, mac, 6) != 0;
+  slot->used = true;
+  slot->id = id;
+  memcpy(slot->mac, mac, 6);
+  slot->lastHeard = now;
+  portEXIT_CRITICAL(&liveLock);
+
+  if (isNew || macChanged) {
+    if (hadMac) esp_now_del_peer(oldMac);  // evicted slot, or the board was swapped
+    addPeer(mac);
+    Serial.printf("[nbr] node %u at %02X:%02X:%02X:%02X:%02X:%02X\n",
+                  id, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  }
+}
+
 // ---------- packet checks ----------
 static bool isValid(Packet &p) {
   if (p.magic != NET0_MAGIC || p.version != NET0_VERSION) return false;
@@ -123,9 +190,41 @@ static Packet newPacket(uint8_t type) {
 }
 
 // ---------- radio ----------
-static void sendPacket(const Packet &p) {
-  esp_err_t err = esp_now_send(BROADCAST_MAC, (const uint8_t *)&p, sizeof(Packet));
+static void sendTo(const uint8_t *mac, const Packet &p) {
+  esp_err_t err = esp_now_send(mac, (const uint8_t *)&p, sizeof(Packet));
+  if (err == ESP_ERR_ESPNOW_NO_MEM) {  // radio's send queue is full: give it a moment
+    delay(2);
+    err = esp_now_send(mac, (const uint8_t *)&p, sizeof(Packet));
+  }
   if (err != ESP_OK) Serial.printf("[tx] esp_now_send failed: %s\n", esp_err_to_name(err));
+}
+
+static bool inPath(const Packet &p, uint8_t id) {
+  for (uint8_t i = 0; i < p.path_len; i++)
+    if (p.path[i] == id) return true;
+  return false;
+}
+
+// Unicast to every live neighbor that hasn't already had this packet (in its
+// path). Broadcast only if we know no live neighbor at all.
+static void sendPacket(const Packet &p) {
+  uint8_t macs[MAX_LIVE][6];
+  uint8_t alive = 0, count = 0;
+  uint32_t now = millis();
+
+  portENTER_CRITICAL(&liveLock);
+  for (LiveNeighbor &n : live) {
+    if (!n.used || now - n.lastHeard > NEIGHBOR_TIMEOUT_MS) continue;
+    alive++;
+    if (!inPath(p, n.id)) memcpy(macs[count++], n.mac, 6);
+  }
+  portEXIT_CRITICAL(&liveLock);
+
+  if (alive == 0) {
+    sendTo(BROADCAST_MAC, p);
+    return;
+  }
+  for (uint8_t i = 0; i < count; i++) sendTo(macs[i], p);
 }
 
 // modemSleep must be true when Bluetooth is also running (the ESP32 aborts
@@ -155,7 +254,7 @@ static void initRadio(const char *apName, bool modemSleep = false) {
   Serial.printf("[boot] ESP-NOW version %u\n", ver);
   if (ver < 2) Serial.println("[boot] WARNING: ESP-NOW v1 (250 B max). Use the pioarduino platform!");
 
-  rxQueue = xQueueCreate(10, sizeof(RxItem));
+  rxQueue = xQueueCreate(24, sizeof(RxItem));  // deep enough for a burst while loop() is busy forwarding
   esp_now_register_recv_cb(onRecv);
 
   esp_now_peer_info_t peer = {};

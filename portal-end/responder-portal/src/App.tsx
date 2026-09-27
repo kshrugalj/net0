@@ -5,155 +5,139 @@ import IncidentMap from './components/IncidentMap'
 import NavRail, { type AppView } from './components/NavRail'
 import MessagesView from './views/MessagesView'
 import AgentModeDock from './components/AgentModeDock'
-import { mockIncidents, mockNetworkNodes } from './data/mockIncidents'
+import AgentCursor from './components/AgentCursor'
+import DispatchDock from './components/DispatchDock'
+import { useLivePortal } from './hooks/useLivePortal'
+import { useInbox } from './hooks/useInbox'
+import { useDeviceLocation } from './hooks/useDeviceLocation'
+import { useDispatcherAgent } from './hooks/useDispatcherAgent'
 import type { AiResponder, Incident } from './types/incident'
-import type { AgentBrief, RescuePlan, RoutePoint } from './types/agent'
-import type { NetworkNode } from './types/network'
 import { filterByResponders } from './utils/groupIncidents'
-import { listNodes, listReports, updateReport, type NodeApi, type ReportApi } from './api/reports'
-import { runAgent, sendAgentCheckIn, type AgentApiBrief, type AgentApiPlan } from './api/agent'
+import { sendMessage } from './api/messages'
+import { latestMessageId, markConversationRead, totalUnread, unreadCountsByUser } from './utils/messageRead'
+import { dispatchCode } from './utils/dispatchOrder'
+import { formatArrival, orderByLocation } from './utils/streetRoute'
 import './App.css'
 
 function App() {
-  const [incidents, setIncidents] = useState(mockIncidents)
-  const [networkNodes, setNetworkNodes] = useState(mockNetworkNodes)
+  const { incidents, nodes, loading, error, link, acknowledge, resolveReports } = useLivePortal()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedFilters, setSelectedFilters] = useState<AiResponder[]>([])
   const [view, setView] = useState<AppView>('home')
   const [peekUserId, setPeekUserId] = useState<number | null>(null)
   const [messagesUserId, setMessagesUserId] = useState<number | null>(null)
   const [agentMode, setAgentMode] = useState(false)
-  const [agentPlan, setAgentPlan] = useState<RescuePlan | null>(null)
-  const [agentBrief, setAgentBrief] = useState<AgentBrief | null>(null)
-  const [agentLoading, setAgentLoading] = useState(false)
-  const [agentStatus, setAgentStatus] = useState<'ok' | 'fallback' | null>(null)
-  const [responderPosition, setResponderPosition] = useState<[number, number] | null>(null)
-  const responderPositionRef = useRef<[number, number] | null>(null)
-  const [streetRoute, setStreetRoute] = useState<RoutePoint[]>([])
+  const [agentExpandedUsers, setAgentExpandedUsers] = useState<number[]>([])
+  const [agentCompose, setAgentCompose] = useState<string | null>(null)
+  const [dispatchIds, setDispatchIds] = useState<string[]>([])
+  const [orderNumber, setOrderNumber] = useState(1)
+  const [highlightedDispatchId, setHighlightedDispatchId] = useState<string | null>(null)
+  const [dispatchFocus, setDispatchFocus] = useState<{ id: string; token: number } | null>(null)
+  const [dispatchEtas, setDispatchEtas] = useState<Record<string, number>>({})
+  const [dispatchNotice, setDispatchNotice] = useState<string | null>(null)
+  const devicePosition = useDeviceLocation()
+
+  const openIncidents = useMemo(
+    () => incidents.filter(incident => incident.status !== 'RESOLVED'),
+    [incidents],
+  )
 
   const filteredIncidents = useMemo(
-    () => filterByResponders(incidents, selectedFilters),
-    [incidents, selectedFilters],
+    () => filterByResponders(openIncidents, selectedFilters),
+    [openIncidents, selectedFilters],
   )
 
   const seedUsers = useMemo(() => {
     const map = new Map<number, string | undefined>()
-    for (const incident of incidents) {
+    for (const incident of openIncidents) {
       if (!map.has(incident.userId)) map.set(incident.userId, incident.userName)
     }
     return map
+  }, [openIncidents])
+
+  const inboxSeeds = useMemo(
+    () => [...seedUsers.entries()].map(([userId, userName]) => ({ userId, userName })),
+    [seedUsers],
+  )
+  const {
+    conversations,
+    messages: inboxMessages,
+    loading: inboxLoading,
+    error: inboxError,
+  } = useInbox(true, inboxSeeds)
+  const viewingUserId = view === 'messages' ? messagesUserId : null
+  const [readEpoch, setReadEpoch] = useState(0)
+
+  useEffect(() => {
+    if (viewingUserId == null) return
+    const advanced = markConversationRead(viewingUserId, latestMessageId(inboxMessages, viewingUserId))
+    if (advanced) setReadEpoch(epoch => epoch + 1)
+  }, [viewingUserId, inboxMessages])
+
+  const unreadByUser = useMemo(
+    () => unreadCountsByUser(inboxMessages, viewingUserId),
+    [inboxMessages, viewingUserId, readEpoch],
+  )
+  const unreadTotal = totalUnread(unreadByUser)
+
+  const dispatchIncidents = useMemo(() => {
+    const chosen = dispatchIds.flatMap(id => {
+      const incident = incidents.find(item => item.id === id)
+      return incident ? [incident] : []
+    })
+    const located = chosen.filter(hasFix)
+    const missing = chosen.filter(incident => !hasFix(incident))
+    const start = devicePosition
+      ? ([Number(devicePosition[0].toFixed(4)), Number(devicePosition[1].toFixed(4))] as [number, number])
+      : null
+    return [...orderByLocation(start, located), ...missing]
+  }, [devicePosition, dispatchIds, incidents])
+
+  const dispatchStops = useMemo(
+    () => dispatchIncidents.filter(hasFix).map(incident => ({ id: incident.id, lat: incident.lat, lon: incident.lon })),
+    [dispatchIncidents],
+  )
+
+  const dispatchIdsRef = useRef(dispatchIds)
+  const dispatchIncidentsRef = useRef(dispatchIncidents)
+  const incidentsRef = useRef(incidents)
+  dispatchIncidentsRef.current = dispatchIncidents
+  incidentsRef.current = incidents
+  useEffect(() => {
+    dispatchIdsRef.current = dispatchIds
+  }, [dispatchIds])
+
+  useEffect(() => {
+    if (!incidents.length) return
+    const live = new Set(incidents.map(incident => incident.id))
+    setDispatchIds(current => {
+      const next = current.filter(id => live.has(id))
+      return next.length === current.length ? current : next
+    })
   }, [incidents])
 
   useEffect(() => {
-    let cancelled = false
-    async function refresh() {
-      try {
-        const [reports, nodes] = await Promise.all([listReports(), listNodes()])
-        if (cancelled) return
-        if (reports.length) {
-          const liveIncidents = reports.map(toIncident)
-          // The current seeded reports are text-only and have no coordinates.
-          // Keep the mapped campus incidents visible until live GPS reports arrive.
-          const hasLiveCoordinates = reports.some(report => report.gps_lat != null && report.gps_lon != null)
-          setIncidents(hasLiveCoordinates ? liveIncidents : [...mockIncidents, ...liveIncidents])
-        }
-        if (nodes.length) setNetworkNodes(nodes.map(toNetworkNode))
-      } catch {
-        // Keep the demo data available when the API is offline.
-      }
-    }
-    void refresh()
-    const timer = window.setInterval(refresh, 5000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!agentMode) return
-    let cancelled = false
-    async function refreshAgent() {
-      setAgentLoading(true)
-      try {
-        const result = await runAgent(
-          selectedId ? Number(selectedId) : undefined,
-          responderPositionRef.current ? { lat: responderPositionRef.current[0], lon: responderPositionRef.current[1] } : undefined,
-          streetRoute,
-        )
-        if (cancelled) return
-        setAgentPlan(result.plan ? toRescuePlan(result.plan) : null)
-        setAgentBrief(toAgentBrief(result.brief))
-        setAgentStatus(result.status)
-      } catch {
-        if (!cancelled) setAgentStatus(null)
-      } finally {
-        if (!cancelled) setAgentLoading(false)
-      }
-    }
-    void refreshAgent()
-    const timer = window.setInterval(refreshAgent, 30000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [agentMode, selectedId, streetRoute])
-
-  useEffect(() => {
-    if (!navigator.geolocation) return
-    const watchId = navigator.geolocation.watchPosition(
-      position => {
-        const next: [number, number] = [position.coords.latitude, position.coords.longitude]
-        responderPositionRef.current = next
-        setResponderPosition(next)
-      },
-      () => {
-        // Keep the last known position on transient permission/signal errors.
-        // Regular mode and Agent Mode share this same location source.
-      },
-      { enableHighAccuracy: true, maximumAge: 10_000, timeout: 8_000 },
-    )
-    return () => navigator.geolocation.clearWatch(watchId)
-  }, [])
+    if (!dispatchNotice) return
+    const timer = window.setTimeout(() => setDispatchNotice(null), 6000)
+    return () => window.clearTimeout(timer)
+  }, [dispatchNotice])
 
   function selectIncident(id: string) {
     setSelectedId(id)
-    setStreetRoute([])
     setPeekUserId(null)
-    setIncidents(current =>
-      current.map(incident =>
-        incident.id === id && incident.status === 'NEW' ? { ...incident, status: 'ACKNOWLEDGED' } : incident,
-      ),
-    )
-    void acknowledgeReport(id)
+    void acknowledge(id)
   }
 
   function acknowledgeIncident(id: string) {
-    setIncidents(current =>
-      current.map(incident =>
-        incident.id === id && incident.status === 'NEW' ? { ...incident, status: 'ACKNOWLEDGED' } : incident,
-      ),
-    )
-    void acknowledgeReport(id)
-  }
-
-  async function acknowledgeReport(id: string) {
-    const reportId = Number(id)
-    if (!Number.isInteger(reportId)) return
-    try {
-      await updateReport(reportId, { status: 'acknowledged' })
-    } catch {
-      // Keep local acknowledgement when the API is unavailable.
-    }
+    void acknowledge(id)
   }
 
   function changeFilters(next: AiResponder[]) {
     setSelectedFilters(next)
     setSelectedId(current => {
       if (current == null) return current
-      const visible = filterByResponders(incidents, next)
+      const visible = filterByResponders(openIncidents, next)
       if (visible.some(incident => incident.id === current)) return current
-      setStreetRoute([])
       return null
     })
   }
@@ -174,37 +158,169 @@ function App() {
     }
   }
 
-  function toggleAgentMode() {
-    setAgentMode(current => {
-      const next = !current
-      if (next && selectedId == null && incidents.length > 0) {
-        const highestPriority = [...incidents].sort((a, b) => b.priority - a.priority)[0]
-        setSelectedId(highestPriority.id)
-      }
+  function releaseDispatchFocus(id: string) {
+    if (dispatchFocus?.id !== id) return
+    setDispatchFocus(null)
+    setHighlightedDispatchId(current => (current === id ? null : current))
+  }
 
-      return next
+  function toggleDispatch(id: string) {
+    setDispatchIds(current => {
+      if (current.includes(id)) return current.filter(item => item !== id)
+      return [...current, id]
+    })
+    if (dispatchIds.includes(id)) releaseDispatchFocus(id)
+  }
+
+  function removeFromDispatch(id: string) {
+    setDispatchIds(current => current.filter(item => item !== id))
+    releaseDispatchFocus(id)
+  }
+
+  function focusDispatchStop(id: string) {
+    setHighlightedDispatchId(id)
+    setDispatchFocus(current => ({ id, token: (current?.token ?? 0) + 1 }))
+  }
+
+  async function sendDispatch(): Promise<number[]> {
+    const queued = dispatchIncidentsRef.current
+    if (!queued.length) return []
+    const etas = dispatchEtas
+    const code = dispatchCode(orderNumber)
+    const ids = queued.map(incident => incident.id)
+    dispatchIdsRef.current = []
+    setDispatchIds([])
+    setDispatchEtas({})
+    setHighlightedDispatchId(null)
+    setOrderNumber(number => number + 1)
+    if (selectedId && ids.includes(selectedId)) setSelectedId(null)
+    const notified = await notifyDispatch(queued, etas, code)
+    await resolveReports(ids)
+    return notified
+  }
+
+  async function notifyDispatch(queued: Incident[], etas: Record<string, number>, code: string): Promise<number[]> {
+    const seen = new Set<number>()
+    const unique = queued.filter(incident => {
+      if (seen.has(incident.userId)) return false
+      seen.add(incident.userId)
+      return true
+    })
+    const results = await Promise.all(
+      unique.map(async incident => {
+        const minutes = etas[incident.id]
+        const arrival =
+          minutes != null
+            ? ` Estimated arrival is about ${formatArrival(minutes)}.`
+            : ' Help is on the way.'
+        const text = `Dispatch #${code} sent for your ${incident.type.toLowerCase()} report.${arrival}`
+        try {
+          await sendMessage({
+            user_id: incident.userId,
+            text,
+            sender: 'Portal',
+            reply_to: incident.msgId,
+          })
+          return true
+        } catch {
+          return false
+        }
+      }),
+    )
+    const failed = results.filter(ok => !ok).length
+    setDispatchNotice(
+      failed
+        ? `Dispatch sent. ${failed} ${failed === 1 ? 'notification failed' : 'notifications failed'}.`
+        : 'Dispatch sent. Each person was told help is on the way.',
+    )
+    return unique.map(incident => incident.userId)
+  }
+
+  function expandAgentUser(userId: number) {
+    setAgentExpandedUsers(current => (current.includes(userId) ? current : [...current, userId]))
+  }
+
+  async function sendAgentText(userId: number, text: string) {
+    const incident = incidentsRef.current.find(item => item.userId === userId && item.status !== 'RESOLVED')
+    await sendMessage({
+      user_id: userId,
+      text,
+      sender: 'Net0 Agent',
+      reply_to: incident?.msgId,
     })
   }
 
-  const displayPlan = agentPlan && streetRoute.length
-    ? {
-        ...agentPlan,
-        route: streetRoute,
-        routeLabel: 'Preferred street corridor',
-        routeNote: 'Route follows mapped streets and accessible ways; verify closures before entry.',
+  const { thought: agentThought, cursor: agentCursor } = useDispatcherAgent({
+    enabled: agentMode,
+    dispatchIdsRef,
+    setDispatchIds,
+    incidentsRef,
+    selectIncident,
+    runDispatch: sendDispatch,
+    openThread: openMessages,
+    showHome: () => setView('home'),
+    sendText: sendAgentText,
+    expandUser: expandAgentUser,
+    setCompose: setAgentCompose,
+  })
+
+  function toggleAgentMode() {
+    setAgentMode(current => !current)
+  }
+
+  useEffect(() => {
+    if (!agentMode) return
+    const previousOverflow = document.documentElement.style.overflow
+    document.documentElement.style.overflow = 'hidden'
+
+    const allowToggle = (target: EventTarget | null) =>
+      target instanceof Element && Boolean(target.closest('.agent-dock-toggle'))
+
+    const blockPointer = (event: Event) => {
+      if (allowToggle(event.target)) return
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    const blockKeys = (event: KeyboardEvent) => {
+      if (allowToggle(event.target)) return
+      const scrolling = [' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End']
+      if (scrolling.includes(event.key) || event.key === 'Tab') {
+        event.preventDefault()
+        event.stopPropagation()
       }
-    : agentPlan
+    }
+
+    window.addEventListener('wheel', blockPointer, { capture: true, passive: false })
+    window.addEventListener('touchmove', blockPointer, { capture: true, passive: false })
+    window.addEventListener('keydown', blockKeys, true)
+    return () => {
+      document.documentElement.style.overflow = previousOverflow
+      window.removeEventListener('wheel', blockPointer, true)
+      window.removeEventListener('touchmove', blockPointer, true)
+      window.removeEventListener('keydown', blockKeys, true)
+    }
+  }, [agentMode])
+
+  const emptyMessage =
+    openIncidents.length > 0
+      ? 'No reports match these filters.'
+      : error
+        ? error
+        : loading
+          ? 'Connecting to the portal server…'
+          : 'No reports yet. New emergencies will appear here.'
 
   return (
-    <div className="app-shell">
-      <NavRail view={view} onChange={changeView} />
+    <div className={`app-shell ${agentMode ? 'agent-watching' : ''}`}>
+      <div className="agent-stage" inert={agentMode ? true : undefined}>
+      <NavRail view={view} unreadCount={unreadTotal} onChange={changeView} />
       <div className="dashboard">
-        <Header nodes={networkNodes} />
+        <Header nodes={nodes} link={link} />
         <main className={`dashboard-content ${view === 'messages' ? 'messages-mode' : ''}`}>
           {view === 'home' ? (
             <div className="workspace">
               <IncidentQueue
-                incidents={incidents}
+                incidents={openIncidents}
                 filteredIncidents={filteredIncidents}
                 selectedFilters={selectedFilters}
                 onFiltersChange={changeFilters}
@@ -212,123 +328,69 @@ function App() {
                 onSelect={selectIncident}
                 onClearSelect={() => {
                   setSelectedId(null)
-                  setStreetRoute([])
                 }}
                 onAcknowledge={acknowledgeIncident}
                 peekUserId={peekUserId}
                 onPeekUser={setPeekUserId}
                 onOpenMessages={openMessages}
+                notice={dispatchNotice ?? (error && openIncidents.length > 0 ? error : null)}
+                emptyMessage={emptyMessage}
                 agentMode={agentMode}
+                agentExpandedUsers={agentExpandedUsers}
+                dispatchIds={dispatchIds}
+                onToggleDispatch={toggleDispatch}
               />
               <IncidentMap
                 incidents={filteredIncidents}
                 selectedId={selectedId}
                 onSelectIncident={selectIncident}
-                route={streetRoute}
-                responderPosition={responderPosition}
-                onRouteChange={setStreetRoute}
+                onClearSelection={() => setSelectedId(null)}
+                devicePosition={devicePosition}
+                dispatchStops={dispatchStops}
+                dispatchOrder={dispatchIncidents.map(incident => incident.id)}
+                highlightedDispatchId={highlightedDispatchId}
+                dispatchFocus={dispatchFocus}
+                onDispatchEtas={setDispatchEtas}
               />
             </div>
           ) : (
             <MessagesView
-              incidents={incidents}
+              incidents={openIncidents}
+              conversations={conversations}
+              loading={inboxLoading}
+              error={inboxError}
+              unreadByUser={unreadByUser}
               selectedUserId={messagesUserId}
               onSelectUser={setMessagesUserId}
+              composeText={agentCompose}
             />
           )}
         </main>
       </div>
-      <AgentModeDock
-        active={agentMode}
-        incidents={incidents}
-        selectedId={selectedId}
-        nodes={networkNodes}
-        responderLive={responderPosition != null}
-        plan={displayPlan}
-        brief={agentBrief}
-        loading={agentLoading}
-        runStatus={agentStatus}
-        onToggle={toggleAgentMode}
-        onApproveCheckIn={async (reportId, text) => {
-          const result = await sendAgentCheckIn(reportId, text)
-          const targetIncident = incidents.find(incident => incident.id === String(reportId))
-          if (targetIncident) setMessagesUserId(targetIncident.userId)
-          return result.status
-        }}
-      />
+      </div>
+      <AgentCursor point={agentCursor} />
+      <div className="corner-stack">
+        {agentMode ? <div className="agent-lock" aria-hidden /> : null}
+        <AgentModeDock active={agentMode} thought={agentThought} onToggle={toggleAgentMode} />
+        {dispatchIncidents.length > 0 ? (
+          <DispatchDock
+            orderNumber={orderNumber}
+            incidents={dispatchIncidents}
+            hasDeviceFix={devicePosition != null}
+            etas={dispatchEtas}
+            onRemove={removeFromDispatch}
+            onSend={sendDispatch}
+            onHighlight={setHighlightedDispatchId}
+            onFocus={focusDispatchStop}
+          />
+        ) : null}
+      </div>
     </div>
   )
 }
 
+function hasFix(incident: Incident): incident is Incident & { lat: number; lon: number } {
+  return incident.lat != null && incident.lon != null && Number.isFinite(incident.lat) && Number.isFinite(incident.lon)
+}
+
 export default App
-
-function toIncident(report: ReportApi): Incident {
-  const type = report.category === 1 ? 'Medical' : report.category === 2 ? 'Trapped' : report.category === 3 ? 'Fire' : 'Other'
-  const status = report.status === 'received' ? 'NEW' : report.status === 'responding' ? 'RESPONDING' : report.status === 'resolved' ? 'RESOLVED' : 'ACKNOWLEDGED'
-  const location = report.gps_lat != null && report.gps_lon != null ? `${report.gps_lat}, ${report.gps_lon}` : report.location || 'Unknown location'
-  return {
-    id: String(report.id),
-    userId: report.user_id,
-    userName: report.user?.name || undefined,
-    type,
-    people: report.people,
-    node: String(report.origin).padStart(2, '0'),
-    arrivedAt: report.created_at,
-    status,
-    location,
-    placeName: report.location || undefined,
-    locationDetail: report.gps_lat != null ? `GPS ±${report.gps_accuracy ?? '?'} m` : 'Location reported by civilian',
-    report: report.ai_summary || report.message || 'No additional details supplied.',
-    path: report.path.map(node => `Node ${String(node).padStart(2, '0')}`),
-    aiResponders: (report.ai_responders ?? []).filter(isAiResponder),
-    priority: (report.ai_priority ?? 2) as Incident['priority'],
-    clusterId: report.cluster_id ?? undefined,
-    aiSummary: report.ai_summary ?? undefined,
-    x: 0,
-    y: 0,
-  }
-
-}
-
-function isAiResponder(value: string): value is AiResponder {
-  return ['medical_ems', 'fire_rescue', 'law_enforcement', 'technical_sar', 'humanitarian_care', 'coast_guard'].includes(value)
-}
-
-function toNetworkNode(node: NodeApi): NetworkNode {
-  return {
-    id: String(node.node_id),
-    name: node.role === 3 ? 'Gateway' : `Access Node ${String(node.node_id).padStart(2, '0')}`,
-    status: node.status.toLowerCase() === 'online' ? 'ONLINE' : 'OFFLINE',
-  }
-}
-
-function toRescuePlan(plan: AgentApiPlan): RescuePlan {
-  return {
-    reportId: plan.report_id,
-    priority: plan.priority,
-    title: plan.title,
-    summary: plan.summary,
-    approach: plan.approach,
-    avoid: plan.avoid,
-    confidence: plan.confidence,
-    evidence: plan.evidence,
-    unknowns: plan.unknowns,
-    draft: plan.draft,
-    route: plan.route ?? [],
-    routeLabel: plan.route_label ?? 'Preferred corridor',
-    routeNote: plan.route_note ?? 'Verify blocked access and hazards before entry.',
-  }
-}
-
-function toAgentBrief(brief: AgentApiBrief): AgentBrief {
-  return {
-    reportCount: brief.report_count,
-    incidentCount: brief.incident_count,
-    insight: brief.insight,
-    highlights: brief.highlights,
-    summary: brief.summary,
-    signals: brief.signals,
-    verify: brief.verify,
-    generatedAt: brief.generated_at,
-  }
-}

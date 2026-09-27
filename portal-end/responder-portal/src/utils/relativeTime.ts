@@ -1,7 +1,11 @@
-/** Relative time from an ISO timestamp vs the user's local clock. */
+import { formatClock, parseServerTime } from './serverTime'
+
+export { formatClock }
+
+/** Relative time from a server timestamp vs the user's local clock. Naive timestamps are UTC. */
 export function formatRelativeTime(iso: string, now = Date.now()): string {
-  const then = new Date(iso).getTime()
-  if (!Number.isFinite(then)) return ''
+  const then = parseServerTime(iso)
+  if (then == null) return ''
   const deltaSec = Math.max(0, Math.round((now - then) / 1000))
   if (deltaSec < 5) return 'just now'
   if (deltaSec < 60) return `${deltaSec} sec ago`

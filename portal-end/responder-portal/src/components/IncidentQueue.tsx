@@ -19,7 +19,12 @@ interface Props {
   peekUserId: number | null
   onPeekUser: (userId: number | null) => void
   onOpenMessages: (userId: number) => void
+  notice?: string | null
+  emptyMessage?: string
   agentMode?: boolean
+  agentExpandedUsers?: number[]
+  dispatchIds: string[]
+  onToggleDispatch: (id: string) => void
 }
 
 export default function IncidentQueue({
@@ -34,9 +39,29 @@ export default function IncidentQueue({
   peekUserId,
   onPeekUser,
   onOpenMessages,
+  notice = null,
+  emptyMessage = 'No reports match these filters.',
   agentMode = false,
+  agentExpandedUsers = [],
+  dispatchIds,
+  onToggleDispatch,
 }: Props) {
   const [expandedUsers, setExpandedUsers] = useState<Set<number>>(() => new Set())
+
+  useEffect(() => {
+    if (!agentExpandedUsers.length) return
+    setExpandedUsers(current => {
+      let changed = false
+      const next = new Set(current)
+      for (const userId of agentExpandedUsers) {
+        if (!next.has(userId)) {
+          next.add(userId)
+          changed = true
+        }
+      }
+      return changed ? next : current
+    })
+  }, [agentExpandedUsers])
   const [sort, setSort] = useState<IncidentSort>('arrival')
   const [sortOpen, setSortOpen] = useState(false)
   const [caretY, setCaretY] = useState(48)
@@ -49,6 +74,11 @@ export default function IncidentQueue({
     () => sortGroups(groupByUser(filteredIncidents), agentMode ? 'priority' : sort),
     [agentMode, filteredIncidents, sort],
   )
+
+  useEffect(() => {
+    const feed = panelRef.current?.querySelector('.incident-feed')
+    if (feed) feed.scrollTop = 0
+  }, [sort])
 
   const selectedIncident = incidents.find(incident => incident.id === selectedId) ?? null
   const selectedUserId = selectedIncident?.userId
@@ -111,10 +141,10 @@ export default function IncidentQueue({
     }
   }, [selectedId, expandedUsers])
 
-  const peekGroup = peekUserId != null ? groups.find(g => g.userId === peekUserId) : undefined
+  const peekGroup = peekUserId != null ? groups.find(group => group.userId === peekUserId) : undefined
   const peekName =
     peekGroup?.userName ??
-    incidents.find(i => i.userId === peekUserId)?.userName
+    incidents.find(incident => incident.userId === peekUserId)?.userName
 
   function toggleUser(userId: number) {
     setExpandedUsers(current => {
@@ -132,60 +162,76 @@ export default function IncidentQueue({
           <h2 id="queue-heading">Incidents</h2>
           <div className="queue-heading-actions">
             <span className="small-label">{filteredIncidents.length} reports</span>
-            {!agentMode && <div className="sort-menu" ref={sortMenuRef}>
-              <button
-                type="button"
-                className={`sort-toggle ${sortOpen ? 'open' : ''}`}
-                aria-label="Sort incidents"
-                aria-haspopup="menu"
-                aria-expanded={sortOpen}
-                title="Sort"
-                onClick={() => setSortOpen(open => !open)}
-              >
-                <SortIcon />
-              </button>
-              {sortOpen && (
-                <div className="sort-dropdown" role="menu">
-                  <button
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={sort === 'arrival'}
-                    className={sort === 'arrival' ? 'active' : ''}
-                    onClick={() => {
-                      setSort('arrival')
-                      setSortOpen(false)
-                    }}
-                  >
-                    Arrival time
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={sort === 'priority'}
-                    className={sort === 'priority' ? 'active' : ''}
-                    onClick={() => {
-                      setSort('priority')
-                      setSortOpen(false)
-                    }}
-                  >
-                    Priority
-                  </button>
-                </div>
-              )}
-            </div>}
+            {!agentMode && (
+              <div className="sort-menu" ref={sortMenuRef}>
+                <button
+                  type="button"
+                  className={`sort-toggle ${sortOpen ? 'open' : ''}`}
+                  aria-label={sort === 'priority' ? 'Sort incidents, currently priority' : 'Sort incidents, currently arrival time'}
+                  aria-haspopup="menu"
+                  aria-expanded={sortOpen}
+                  title={sort === 'priority' ? 'Sorted by priority' : 'Sorted by arrival time'}
+                  onClick={() => setSortOpen(open => !open)}
+                >
+                  <SortIcon />
+                  <span className="sort-current">{sort === 'priority' ? 'Priority' : 'Arrival'}</span>
+                </button>
+                {sortOpen && (
+                  <div className="sort-dropdown" role="menu">
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={sort === 'arrival'}
+                      className={sort === 'arrival' ? 'active' : ''}
+                      onPointerDown={event => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        setSort('arrival')
+                        setSortOpen(false)
+                      }}
+                    >
+                      Arrival time
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={sort === 'priority'}
+                      className={sort === 'priority' ? 'active' : ''}
+                      onPointerDown={event => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        setSort('priority')
+                        setSortOpen(false)
+                      }}
+                    >
+                      Priority
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
         {agentMode ? (
           <div className="agent-queue-banner" role="status">
-            <span className="agent-banner-spark" aria-hidden>✦</span>
-            <span><strong>Agent triage active</strong> · highest-risk reports first</span>
+            <span className="agent-banner-spark" aria-hidden>
+              ✦
+            </span>
+            <span>
+              <strong>Agent triage active</strong> · highest-risk reports first
+            </span>
           </div>
         ) : (
           <ResponderFilter selected={selectedFilters} onChange={onFiltersChange} />
         )}
+        {notice ? (
+          <p className="connection-note" role="status">
+            {notice}
+          </p>
+        ) : null}
         <div className="incident-feed">
           {groups.length === 0 ? (
-            <p className="queue-empty">No reports match these filters.</p>
+            <p className="queue-empty">{emptyMessage}</p>
           ) : (
             groups.map(group => (
               <UserIncidentGroupRow
@@ -196,6 +242,8 @@ export default function IncidentQueue({
                 selectedId={selectedId}
                 onToggle={() => toggleUser(group.userId)}
                 onSelectReport={onSelect}
+                dispatchIds={dispatchIds}
+                onToggleDispatch={onToggleDispatch}
                 onMessage={userId => onPeekUser(peekUserId === userId ? null : userId)}
                 messaging={peekUserId === group.userId}
               />
@@ -225,7 +273,9 @@ export default function IncidentQueue({
               <IncidentDetails
                 key={selectedIncident.id}
                 incident={selectedIncident}
+                inDispatch={dispatchIds.includes(selectedIncident.id)}
                 onAcknowledge={onAcknowledge}
+                onToggleDispatch={onToggleDispatch}
               />
             </div>
           </div>

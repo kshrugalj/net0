@@ -1,127 +1,81 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>net0</title>
-    <meta name="description" content="net0 emergency help when networks are down." />
-    <link rel="stylesheet" href="/style.css" />
-  </head>
-  <body>
-    <main class="app-shell" aria-live="polite">
-      <header class="header" aria-label="net0 header">
-        <div class="brand-block">
-          <p class="eyebrow">OFFLINE EMERGENCY NETWORK</p>
-          <h1 class="brand">net<span>0</span><span class="brand-signal" aria-hidden="true"><i></i><i></i><i></i></span></h1>
-          <p class="tagline">Emergency help when networks are down.</p>
-        </div>
-        <div class="status" aria-label="network status">
-          <span class="status-dot" aria-hidden="true"></span>
-          <span id="node-status">Connected to local node</span>
-        </div>
-      </header>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#000">
+<title>net0</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main class="app" aria-live="polite">
+<header class="hdr">
+<div class="brand"><h1>net<span>0</span></h1><span class="pname">Emergency Help</span></div>
+<div class="pill"><i class="dot"></i><span id="node-status">Connected to local node</span></div>
+<p class="tag">Emergency help when networks are down.</p>
+</header>
 
-      <!-- Step 1: the request -->
-      <section id="request-screen" class="screen active" aria-label="Emergency request form">
-        <div class="section-label">What's happening?</div>
+<section id="request-screen" class="screen active panel" aria-label="Emergency request form">
+<label for="civilian-name">Your name</label>
+<input id="civilian-name" type="text" maxlength="31" placeholder="Enter your name" autocomplete="name" required>
 
-        <div id="emergency-selection" class="emergency-grid" role="group" aria-label="Emergency type selection">
-          <button class="emergency-option" type="button" data-emergency="medical" aria-pressed="false">
-            <svg class="option-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6v6h6v6h-6v6H9v-6H3V9h6Z"/></svg><span class="selection-check" aria-hidden="true">✓</span>
-            <span>Medical</span>
-          </button>
-          <button class="emergency-option" type="button" data-emergency="fire" aria-pressed="false">
-            <svg class="option-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 3c1 5-4 5-3 9 2 0 3-2 4-3 3 3 5 5 5 8a7 7 0 0 1-14 0c0-5 5-8 8-14Z"/><path d="M12 15c-2 2-3 3-3 4a3 3 0 0 0 6 0c0-1-1-3-3-4Z"/></svg><span class="selection-check" aria-hidden="true">✓</span>
-            <span>Fire</span>
-          </button>
-          <button class="emergency-option" type="button" data-emergency="trapped" aria-pressed="false">
-            <svg class="option-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21V3h16v18M8 21h8M12 12v5m-3-2 3-3 3 3"/><circle cx="12" cy="8" r="2"/></svg><span class="selection-check" aria-hidden="true">✓</span>
-            <span>Trapped</span>
-          </button>
-          <button class="emergency-option" type="button" data-emergency="other" aria-pressed="false">
-            <svg class="option-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m10.3 4-8 14a2 2 0 0 0 1.7 3h16a2 2 0 0 0 1.7-3l-8-14a2 2 0 0 0-3.4 0Z"/><path d="M12 9v5m0 3h.01"/></svg><span class="selection-check" aria-hidden="true">✓</span>
-            <span>Other</span>
-          </button>
-        </div>
+<h2 class="gap">What's happening?</h2>
+<div id="emergency-selection" class="grid" role="group" aria-label="Emergency type">
+<button class="opt medical" type="button" data-emergency="medical" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24"><path d="M9 3h6v6h6v6h-6v6H9v-6H3V9h6Z"/></svg><b class="chk">✓</b>Medical</button>
+<button class="opt fire" type="button" data-emergency="fire" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24"><path d="M13 3c1 5-4 5-3 9 2 0 3-2 4-3 3 3 5 5 5 8a7 7 0 0 1-14 0c0-5 5-8 8-14Z"/></svg><b class="chk">✓</b>Fire</button>
+<button class="opt trapped" type="button" data-emergency="trapped" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24"><path d="M4 21V3h16v18M8 21h8M12 12v5m-3-2 3-3 3 3"/><circle cx="12" cy="8" r="2"/></svg><b class="chk">✓</b>Trapped</button>
+<button class="opt other" type="button" data-emergency="other" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24"><path d="M12 3 2.5 20h19L12 3Zm0 6.5v5m0 2.5h.01"/></svg><b class="chk">✓</b>Other</button>
+</div>
+<p id="emergency-message" class="err" aria-live="assertive"></p>
 
-        <p id="emergency-message" class="inline-message" aria-live="assertive"></p>
+<h2 class="gap">How many people need help?</h2>
+<div class="counter">
+<button id="decrement-people" type="button" aria-label="Fewer people">−</button>
+<div id="people-count" aria-live="polite">1</div>
+<button id="increment-people" type="button" aria-label="More people">+</button>
+</div>
 
-        <div class="people-section">
-          <p class="section-label">How many people need help?</p>
-          <div class="counter" aria-label="People count selector">
-            <button id="decrement-people" class="counter-button" type="button" aria-label="Decrease people count">−</button>
-            <div id="people-count" class="count-value" aria-live="polite">1</div>
-            <button id="increment-people" class="counter-button" type="button" aria-label="Increase people count">+</button>
-          </div>
-        </div>
+<label class="gap" for="location">Where are you?</label>
+<input id="location" maxlength="63" placeholder="e.g. Klaus, Floor 3, Room 2443" autocomplete="off">
+<p id="gps" class="gps">Checking GPS...</p>
 
-        <div class="field">
-          <label class="section-label" for="location">Where are you?</label>
-          <input id="location" name="location" maxlength="63" placeholder="e.g. Klaus, Floor 3, Room 2443" autocomplete="off" />
-          <p id="gps" class="gps">Checking GPS...</p>
-        </div>
+<label id="details-label" class="gap" for="details">Details (optional)</label>
+<textarea id="details" rows="3" maxlength="399" placeholder="Injuries, hazards, anything responders should know"></textarea>
+<div class="cnt"><span id="details-count">0</span>/399</div>
 
-        <div class="field">
-          <label id="details-label" class="section-label" for="details">Details (optional)</label>
-          <textarea id="details" name="message" rows="3" maxlength="399" placeholder="Injuries, hazards, anything responders should know"></textarea>
-          <div class="count"><span id="details-count">0</span>/399</div>
-        </div>
+<button id="send-sos" class="btn" type="button">SEND EMERGENCY SOS</button>
+<p class="note">No cellular or internet connection required.</p>
+</section>
 
-        <button id="send-sos" class="primary-button" type="button">SEND EMERGENCY SOS</button>
-        <p class="reassurance">No cellular or internet connection required.</p>
-      </section>
+<section id="confirmation-screen" class="screen panel" aria-label="SOS confirmation">
+<div id="confirmation-mark" class="mark pending" aria-hidden="true">…</div>
+<h2 id="confirmation-header" class="big">SOS SENT</h2>
+<p id="confirmation-text" class="sub">Your request is on its way through the local emergency network.</p>
+<dl class="sum">
+<div><dt>Emergency</dt><dd id="confirmation-emergency">Medical</dd></div>
+<div><dt>People needing help</dt><dd id="confirmation-people">1</dd></div>
+<div id="confirmation-location-row" hidden><dt>Location</dt><dd id="confirmation-location"></dd></div>
+<div id="confirmation-issue-row" hidden><dt>Details</dt><dd id="confirmation-issue"></dd></div>
+</dl>
+<p id="delivery-status" class="st waiting">Transmitting through the local emergency network...</p>
+</section>
 
-      <!-- Step 2: sent, waiting for the gateway's ACK -->
-      <section id="confirmation-screen" class="screen confirmation-screen" aria-live="polite" aria-label="SOS confirmation">
-        <div id="confirmation-mark" class="confirmation-mark pending" aria-hidden="true">…</div>
-        <div id="confirmation-header" class="confirmation-header">SOS SENT</div>
-        <p id="confirmation-text" class="confirmation-text">Your request is on its way through the local emergency network.</p>
+<section id="chat" class="panel" aria-label="Messages with responders" hidden>
+<h2>Messages with responders</h2>
+<div id="chat-log" class="log" aria-live="polite"><p id="chat-empty" class="muted">No messages yet. Responders can write to you here, and you can send them updates.</p></div>
+<textarea id="chat-text" rows="2" maxlength="399" placeholder="Send an update: injuries, water level, where you moved..." aria-label="Message to responders"></textarea>
+<div class="cnt"><span id="chat-count">0</span>/399</div>
+<p id="chat-error" class="err" aria-live="assertive"></p>
+<button id="chat-send" class="btn alt" type="button">SEND MESSAGE</button>
+</section>
 
-        <div class="summary-box">
-          <div class="summary-row">
-            <span>Emergency:</span>
-            <strong id="confirmation-emergency">Medical</strong>
-          </div>
-          <div class="summary-row">
-            <span>People needing help:</span>
-            <strong id="confirmation-people">1</strong>
-          </div>
-          <div id="confirmation-location-row" class="summary-row" hidden>
-            <span>Location:</span>
-            <strong id="confirmation-location"></strong>
-          </div>
-          <div id="confirmation-issue-row" class="summary-row" hidden>
-            <span>Details:</span>
-            <strong id="confirmation-issue"></strong>
-          </div>
-        </div>
+<div id="new-report-block" hidden>
+<button id="send-update" class="btn sec" type="button">SEND A NEW REPORT</button>
+<p class="note">Stay where you are if it is safe.</p>
+</div>
 
-        <p id="delivery-status" class="status-note waiting">Transmitting through the local emergency network...</p>
-      </section>
-
-      <!-- Messages with responders (on the confirmation screen, or any time a message arrives) -->
-      <section id="chat" class="chat" aria-label="Messages with responders" hidden>
-        <div class="section-label">Messages with responders</div>
-        <div id="chat-log" class="chat-log" aria-live="polite">
-          <p id="chat-empty" class="chat-empty">No messages yet. Responders can write to you here, and you can send them updates.</p>
-        </div>
-        <div class="field chat-compose">
-          <label class="visually-hidden" for="chat-text">Message to responders</label>
-          <textarea id="chat-text" rows="2" maxlength="399" placeholder="Send an update: injuries, water level, where you moved..."></textarea>
-          <div class="count"><span id="chat-count">0</span>/399</div>
-        </div>
-        <p id="chat-error" class="inline-message" aria-live="assertive"></p>
-        <button id="chat-send" class="primary-button chat-send" type="button">SEND MESSAGE</button>
-      </section>
-
-      <div id="new-report-block" hidden>
-        <button id="send-update" class="secondary-button" type="button">SEND A NEW REPORT</button>
-        <p class="reassurance">Stay where you are if it is safe.</p>
-      </div>
-
-      <p class="uid">Your user ID: <span id="user-id">-</span> · Report ID: <span id="report-id">-</span></p>
-    </main>
-
-    <script src="/app.js"></script>
-  </body>
+<p class="uid">Your user ID: <span id="user-id">-</span> · Report ID: <span id="report-id">-</span></p>
+</main>
+<script src="/app.js"></script>
+</body>
 </html>

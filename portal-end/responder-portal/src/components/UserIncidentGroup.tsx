@@ -1,7 +1,7 @@
 import type { Incident } from '../types/incident'
 import type { UserIncidentGroup } from '../utils/groupIncidents'
 import { displayName, groupAgeLabel } from '../utils/groupIncidents'
-import { formatRelativeTime } from '../utils/relativeTime'
+import { formatClock, formatRelativeTime } from '../utils/relativeTime'
 import ResponderPills from './ResponderPills'
 import PriorityMeter from './PriorityMeter'
 
@@ -10,8 +10,10 @@ interface Props {
   now: number
   expanded: boolean
   selectedId: string | null
+  dispatchIds: string[]
   onToggle: () => void
   onSelectReport: (id: string) => void
+  onToggleDispatch: (id: string) => void
   onMessage: (userId: number) => void
   messaging: boolean
 }
@@ -21,17 +23,18 @@ export default function UserIncidentGroupRow({
   now,
   expanded,
   selectedId,
+  dispatchIds,
   onToggle,
   onSelectReport,
+  onToggleDispatch,
   onMessage,
   messaging,
 }: Props) {
   const name = displayName(group.userId, group.userName)
   const age = groupAgeLabel(group, now)
-  const preview = group.reports.find(report => report.id === selectedId) ?? group.reports[0]
 
   return (
-    <div className={`user-group ${expanded ? 'open' : ''} ${messaging ? 'messaging' : ''} ${group.reports.some(report => report.id === selectedId) ? 'has-selection' : ''}`}>
+    <div className={`user-group ${expanded ? 'open' : ''} ${messaging ? 'messaging' : ''}`} data-user-id={group.userId}>
       <div className="user-row">
         <button type="button" className="user-row-main" onClick={onToggle} aria-expanded={expanded}>
           <span className={`user-chevron ${expanded ? 'open' : ''}`} aria-hidden>
@@ -39,23 +42,25 @@ export default function UserIncidentGroupRow({
           </span>
           <span className="user-identity">
             <strong>{name}</strong>
-            <span className="user-scan-line">
-              <span>{preview.type} · {preview.placeName ?? preview.location}</span>
-              <time>{age}</time>
+            <span className="user-meta">
+              {group.reports.length} {group.reports.length === 1 ? 'report' : 'reports'}
+              {age ? ` · ${age}` : ''}
             </span>
-            {expanded && <>
-              <span className="user-meta">{group.reports.length} {group.reports.length === 1 ? 'report' : 'reports'}</span>
-              <span className="user-priority-row">
-                <PriorityMeter level={group.maxPriority} />
+            <span className="user-priority-row">
+              <PriorityMeter level={group.maxPriority} />
+              {group.responders.length > 0 ? (
                 <ResponderPills responders={group.responders} className="user-pills" />
-              </span>
-            </>}
+              ) : group.reports.every(report => report.respondersReady === false) ? (
+                <span className="ai-pending-label">AI pending</span>
+              ) : null}
+            </span>
           </span>
           {group.hasNew && <span className="user-status new">NEW</span>}
         </button>
-        {expanded && <button
+        <button
           type="button"
           className={`user-message-btn ${messaging ? 'active' : ''}`}
+          data-message-user={group.userId}
           aria-label={`Message ${name}`}
           title="Message"
           onClick={event => {
@@ -64,7 +69,7 @@ export default function UserIncidentGroupRow({
           }}
         >
           <MessageIcon />
-        </button>}
+        </button>
       </div>
       {expanded && (
         <div className="user-reports">
@@ -74,7 +79,9 @@ export default function UserIncidentGroupRow({
               report={report}
               now={now}
               selected={selectedId === report.id}
+              inDispatch={dispatchIds.includes(report.id)}
               onSelect={() => onSelectReport(report.id)}
+              onToggleDispatch={() => onToggleDispatch(report.id)}
             />
           ))}
         </div>
@@ -87,30 +94,49 @@ function ReportRow({
   report,
   now,
   selected,
+  inDispatch,
   onSelect,
+  onToggleDispatch,
 }: {
   report: Incident
   now: number
   selected: boolean
+  inDispatch: boolean
   onSelect: () => void
+  onToggleDispatch: () => void
 }) {
   return (
-    <button
-      type="button"
-      data-report-id={report.id}
-      className={`report-row ${selected ? 'selected' : ''}`}
-      aria-pressed={selected}
-      onClick={onSelect}
-    >
-      <span className="report-row-top">
-        <strong className="report-primary">{report.type}</strong>
-        <span className={`report-status ${report.status.toLowerCase()}`}>{report.status}</span>
-      </span>
-      <span className="report-location">{report.placeName ?? report.location}</span>
-      <span className="report-scan-meta">
-        {report.people} {report.people === 1 ? 'person' : 'people'} · {formatRelativeTime(report.arrivedAt, now)}
-      </span>
-    </button>
+    <div data-report-id={report.id} className={`report-row ${selected ? 'selected' : ''}`}>
+      <button type="button" className="report-row-hit" aria-pressed={selected} onClick={onSelect}>
+        {report.status === 'NEW' && <span className="report-status new">NEW</span>}
+        <span className="report-main">
+          <span className="report-row-top">
+            <span className="report-body">
+              <span className="report-place">{report.placeName || report.location || 'Location not provided'}</span>
+            </span>
+            <PriorityMeter level={report.priority} />
+            <span className="report-age" title={formatClock(report.arrivedAt) || undefined}>
+              {formatRelativeTime(report.arrivedAt, now)}
+            </span>
+          </span>
+          {report.aiResponders.length > 0 ? (
+            <ResponderPills responders={report.aiResponders} className="report-pills" />
+          ) : report.respondersReady === false ? (
+            <span className="ai-pending-label">AI pending</span>
+          ) : null}
+        </span>
+      </button>
+      <button
+        type="button"
+        className={`report-dispatch-btn ${inDispatch ? 'on' : ''}`}
+        aria-pressed={inDispatch}
+        aria-label={inDispatch ? 'Remove from dispatch' : 'Add to dispatch'}
+        title={inDispatch ? 'Remove from dispatch' : 'Add to dispatch'}
+        onClick={onToggleDispatch}
+      >
+        {inDispatch ? '✓' : '+'}
+      </button>
+    </div>
   )
 }
 

@@ -1,6 +1,5 @@
 import type { FeatureCollection, LineString } from 'geojson'
 import type L from 'leaflet'
-import type { RoutePoint } from '../types/agent'
 
 type Coordinate = L.LatLngTuple
 
@@ -14,7 +13,18 @@ export interface StreetGraph {
   edges: Map<string, Edge[]>
 }
 
-const CLOSED_HIGHWAYS = new Set(['abandoned', 'construction', 'corridor', 'motorway', 'motorway_link', 'planned', 'proposed', 'raceway', 'trunk', 'trunk_link'])
+const CLOSED_HIGHWAYS = new Set([
+  'abandoned',
+  'construction',
+  'corridor',
+  'motorway',
+  'motorway_link',
+  'planned',
+  'proposed',
+  'raceway',
+  'trunk',
+  'trunk_link',
+])
 
 function nodeKey(point: Coordinate): string {
   return `${point[0].toFixed(6)},${point[1].toFixed(6)}`
@@ -111,20 +121,94 @@ class MinHeap {
   }
 }
 
+/** Off-road gaps shorter than this stay a straight stub, such as a pin just inside a building. */
+const ROAD_JUMP_METERS = 200
+
+function jumpArc(from: Coordinate, to: Coordinate): Coordinate[] {
+  const latScale = 111_000
+  const lonScale = 111_000 * Math.cos((from[0] * Math.PI) / 180)
+  const dx = (to[1] - from[1]) * lonScale
+  const dy = (to[0] - from[0]) * latScale
+  const length = Math.hypot(dx, dy)
+  if (length < 1) return [to]
+  const bow = Math.min(length * 0.14, 280)
+  const nx = -dy / length
+  const ny = dx / length
+  const steps = 8
+  const points: Coordinate[] = []
+  for (let index = 1; index <= steps; index += 1) {
+    const t = index / steps
+    const lift = Math.sin(Math.PI * t) * bow
+    points.push([from[0] + (dy * t + ny * lift) / latScale, from[1] + (dx * t + nx * lift) / lonScale])
+  }
+  return points
+}
+
+/** Straight stub for a short gap. A long gap bows so the missing road reads as a hop. */
+function bridge(from: Coordinate, to: Coordinate): Coordinate[] {
+  const gap = distance(from, to)
+  if (gap < 6) return []
+  if (gap < ROAD_JUMP_METERS) return [to]
+  return jumpArc(from, to)
+}
+
+function appendPoints(path: Coordinate[], points: Coordinate[]) {
+  for (const point of points) {
+    const previous = path[path.length - 1]
+    if (!previous || distance(previous, point) >= 1) path.push(point)
+  }
+}
+
+function roadPath(graph: StreetGraph, startKey: string, targetKey: string, previous: Map<string, string>): Coordinate[] {
+  if (startKey === targetKey) {
+    const only = graph.coordinates.get(startKey)
+    return only ? [only] : []
+  }
+  const keys = [targetKey]
+  while (keys[0] !== startKey) {
+    const parent = previous.get(keys[0])
+    if (!parent) {
+      const start = graph.coordinates.get(startKey)
+      return start ? [start] : []
+    }
+    keys.unshift(parent)
+  }
+  return keys.flatMap(key => {
+    const point = graph.coordinates.get(key)
+    return point ? [point] : []
+  })
+}
+
 export function findStreetRoute(graph: StreetGraph, start: Coordinate, end: Coordinate): Coordinate[] {
   const startKey = nearestNode(graph, start)
   const endKey = nearestNode(graph, end)
-  if (!startKey || !endKey) return []
+  if (!startKey || !endKey) {
+    const path = [start]
+    appendPoints(path, bridge(start, end))
+    return path.length > 1 ? path : []
+  }
+
   const distances = new Map<string, number>([[startKey, 0]])
   const previous = new Map<string, string>()
   const queue = new MinHeap()
   queue.push({ key: startKey, cost: 0 })
+  const startCoordinate = graph.coordinates.get(startKey)!
+  let nearestReachable = startKey
+  let nearestGap = distance(startCoordinate, end)
 
   while (true) {
     const current = queue.pop()
     if (!current) break
-    if (current.key === endKey) break
     if (current.cost !== distances.get(current.key)) continue
+    const coordinate = graph.coordinates.get(current.key)
+    if (coordinate) {
+      const gap = distance(coordinate, end)
+      if (gap < nearestGap) {
+        nearestGap = gap
+        nearestReachable = current.key
+      }
+    }
+    if (current.key === endKey) break
     for (const edge of graph.edges.get(current.key) ?? []) {
       const nextCost = current.cost + edge.cost
       if (nextCost < (distances.get(edge.to) ?? Number.POSITIVE_INFINITY)) {
@@ -135,29 +219,150 @@ export function findStreetRoute(graph: StreetGraph, start: Coordinate, end: Coor
     }
   }
 
-  if (!distances.has(endKey)) return []
-  const keys = [endKey]
-  while (keys[0] !== startKey) {
-    const parent = previous.get(keys[0])
-    if (!parent) return []
-    keys.unshift(parent)
-  }
-  return [start, ...keys.map(key => graph.coordinates.get(key)!), end]
+  const targetKey = distances.has(endKey) ? endKey : nearestReachable
+  const road = roadPath(graph, startKey, targetKey, previous)
+  if (!road.length) return []
+  const path = [start]
+  appendPoints(path, bridge(start, road[0]))
+  appendPoints(path, road)
+  appendPoints(path, bridge(road[road.length - 1], end))
+  return path.length > 1 ? path : []
 }
 
-export function routePoints(path: Coordinate[]): RoutePoint[] {
-  if (path.length < 2) return []
-  const selected = [path[0]]
-  const interiorCount = Math.min(5, Math.max(1, path.length - 2))
-  for (let index = 1; index <= interiorCount; index += 1) {
-    const sourceIndex = Math.round((index * (path.length - 1)) / (interiorCount + 1))
-    selected.push(path[sourceIndex])
+function permutations<T>(items: T[]): T[][] {
+  if (items.length <= 1) return [items.map(item => item)]
+  const result: T[][] = []
+  items.forEach((item, index) => {
+    const rest = items.slice(0, index).concat(items.slice(index + 1))
+    for (const perm of permutations(rest)) result.push([item, ...perm])
+  })
+  return result
+}
+
+function tourCost(start: Coordinate, stops: Coordinate[]): number {
+  let total = 0
+  let cursor = start
+  for (const stop of stops) {
+    total += distance(cursor, stop)
+    cursor = stop
   }
-  selected.push(path[path.length - 1])
-  return selected.map((point, index) => ({
-    lat: point[0],
-    lon: point[1],
-    label: index === 0 ? 'Responder position' : index === selected.length - 1 ? 'Civilian signal' : 'Accessible street',
-    kind: index === 0 ? 'responder' : index === selected.length - 1 ? 'civilian' : 'waypoint',
-  }))
+  return total
+}
+
+/** Shortest visit order from `start` through every stop. Open tour, no return leg. */
+export function orderCoordinates(start: Coordinate, stops: Coordinate[]): Coordinate[] {
+  if (stops.length <= 1) return stops.map(stop => [stop[0], stop[1]] as Coordinate)
+  const tours: Coordinate[][] = stops.length > 8 ? [nearestNeighbor(start, stops)] : permutations(stops)
+  let best = tours[0]
+  let bestCost = Number.POSITIVE_INFINITY
+  for (const tour of tours) {
+    const cost = tourCost(start, tour)
+    if (cost < bestCost) {
+      best = tour
+      bestCost = cost
+    }
+  }
+  return best.map(stop => [stop[0], stop[1]] as Coordinate)
+}
+
+function nearestNeighbor(start: Coordinate, stops: Coordinate[]): Coordinate[] {
+  const remaining = stops.map(stop => [stop[0], stop[1]] as Coordinate)
+  const ordered: Coordinate[] = []
+  let cursor = start
+  while (remaining.length) {
+    let bestIndex = 0
+    let bestDistance = Number.POSITIVE_INFINITY
+    remaining.forEach((stop, index) => {
+      const current = distance(cursor, stop)
+      if (current < bestDistance) {
+        bestIndex = index
+        bestDistance = current
+      }
+    })
+    const [next] = remaining.splice(bestIndex, 1)
+    ordered.push(next)
+    cursor = next
+  }
+  return ordered
+}
+
+export function orderByLocation<T extends { lat: number; lon: number }>(start: Coordinate | null, stops: T[]): T[] {
+  if (!start || stops.length <= 1) return [...stops]
+  const coordinates = orderCoordinates(
+    start,
+    stops.map(stop => [stop.lat, stop.lon]),
+  )
+  const remaining = [...stops]
+  return coordinates.map(point => {
+    let bestIndex = 0
+    let bestDistance = Number.POSITIVE_INFINITY
+    remaining.forEach((stop, index) => {
+      const current = distance(point, [stop.lat, stop.lon])
+      if (current < bestDistance) {
+        bestIndex = index
+        bestDistance = current
+      }
+    })
+    return remaining.splice(bestIndex, 1)[0]
+  })
+}
+
+/** Street-following path from the portal through each stop. A long gap with no road bows across. */
+export function routeThrough(graph: StreetGraph, start: Coordinate, stops: Coordinate[]): Coordinate[] {
+  const ordered = orderCoordinates(start, stops)
+  let path: Coordinate[] = []
+  let from = start
+  for (const stop of ordered) {
+    const leg = findStreetRoute(graph, from, stop)
+    if (leg.length < 2) continue
+    path = path.length ? path.concat(leg.slice(1)) : leg
+    from = stop
+  }
+  return path
+}
+
+/** Urban response speed used to turn the drawn street route into an arrival time. */
+const RESPONSE_SPEED_MPS = (25 * 1609.344) / 3600
+
+function pathLength(path: Coordinate[]): number {
+  let total = 0
+  for (let index = 1; index < path.length; index += 1) {
+    total += distance(path[index - 1], path[index])
+  }
+  return total
+}
+
+export function formatArrival(minutes: number): string {
+  const rounded = Math.max(1, Math.round(minutes))
+  if (rounded < 60) return `${rounded} min`
+  const hours = Math.floor(rounded / 60)
+  const rest = rounded % 60
+  if (!rest) return hours === 1 ? '1 hr' : `${hours} hr`
+  return `${hours} hr ${rest} min`
+}
+
+/**
+ * One pass along the same street route the map draws.
+ * Minutes are cumulative driving time from `start` through each stop in visit order.
+ */
+export function routeDispatch(
+  graph: StreetGraph,
+  start: Coordinate,
+  stops: Array<{ id: string; lat: number; lon: number }>,
+): { path: Coordinate[]; minutesById: Record<string, number> } {
+  const ordered = orderByLocation(start, stops)
+  let path: Coordinate[] = []
+  let from = start
+  let seconds = 0
+  const minutesById: Record<string, number> = {}
+  for (const stop of ordered) {
+    const target: Coordinate = [stop.lat, stop.lon]
+    const leg = findStreetRoute(graph, from, target)
+    const meters = leg.length >= 2 ? pathLength(leg) : distance(from, target)
+    seconds += meters / RESPONSE_SPEED_MPS
+    minutesById[stop.id] = Math.max(1, Math.round(seconds / 60))
+    if (leg.length >= 2) path = path.length ? path.concat(leg.slice(1)) : leg
+    from = target
+  }
+  return { path, minutesById }
 }

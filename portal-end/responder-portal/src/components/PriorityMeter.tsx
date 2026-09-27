@@ -5,17 +5,22 @@ export default function PriorityMeter({
   level,
   size = 'sm',
 }: {
-  level: AiPriority
+  level: AiPriority | null
   size?: 'sm' | 'md'
 }) {
+  const known = level != null
   return (
     <span
       className={`priority-meter ${size}`}
-      title={`Priority ${level} of 5`}
-      aria-label={`Priority ${level} of 5`}
+      title={known ? `Priority ${level} of 5` : 'Priority not set yet'}
+      aria-label={known ? `Priority ${level} of 5` : 'Priority not set yet'}
     >
       {[1, 2, 3, 4, 5].map(step => (
-        <span key={step} className={`priority-bar ${step <= level ? 'on' : ''}`} data-level={level} />
+        <span
+          key={step}
+          className={`priority-bar ${known && step <= level ? 'on' : ''}`}
+          data-level={known ? level : undefined}
+        />
       ))}
     </span>
   )

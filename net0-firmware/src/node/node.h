@@ -16,6 +16,7 @@ struct ReportInfo {
   uint16_t userId;
   uint8_t category;  // backend Category number, 0 = unknown
   uint8_t people;    // 0 = unknown
+  const char *name;
   const char *location;
   const char *message;
   GpsFix gps;

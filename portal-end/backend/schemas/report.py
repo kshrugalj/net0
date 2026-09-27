@@ -16,11 +16,14 @@ class ReportList(BaseModel):
     needs: int
     location: str
     status: str
+    resolved: bool = False
     ai_priority: int | None = None
     created_at: datetime
     acked_at: datetime | None = None
     ai_responders: list[str] | None = None
     cluster_id: str | None = None
+    cluster_summary: str | None = None
+    cluster_responders: list[str] | None = None
 
 
 class ReportDetail(ReportList):

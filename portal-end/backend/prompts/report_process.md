@@ -18,7 +18,7 @@ Given an incident report, produce a JSON object with exactly these fields:
 
 Rules:
 - Prefer over-dispatching life-saving resources when people are injured or trapped.
-- Use `coast_guard` only for water / flood / shoreline / maritime context.
+- Use `coast_guard` only for water / flood / shoreline / maritime context. would not make sense for non coastal regions.
 - Use `technical_sar` for trapped, collapsed, or complex rescue access.
 - Use `humanitarian_care` for shelter, water, meds, vulnerable populations without acute fire/security.
 - Return ONLY valid JSON. No markdown fences, no commentary.

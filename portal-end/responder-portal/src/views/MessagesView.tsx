@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useInbox } from '../hooks/useInbox'
 import type { Incident } from '../types/incident'
 import type { ConversationSummary } from '../types/message'
 import { displayName } from '../utils/groupIncidents'
-import { isConversationUnread, markConversationRead } from '../utils/messageRead'
+import { parseServerTime } from '../utils/serverTime'
 import ChatThread from '../components/ChatThread'
 
 interface Props {
   incidents: Incident[]
+  conversations: ConversationSummary[]
+  loading: boolean
+  error: string | null
+  unreadByUser: Map<number, number>
   selectedUserId: number | null
   onSelectUser: (userId: number) => void
+  composeText?: string | null
 }
 
 interface NodeGroup {
@@ -48,7 +52,16 @@ function matchesQuery(
   )
 }
 
-export default function MessagesView({ incidents, selectedUserId, onSelectUser }: Props) {
+export default function MessagesView({
+  incidents,
+  conversations,
+  loading,
+  error,
+  unreadByUser,
+  selectedUserId,
+  onSelectUser,
+  composeText = null,
+}: Props) {
   const seeds = useMemo(() => {
     const map = new Map<number, { userName?: string; node: string }>()
     for (const incident of incidents) {
@@ -72,25 +85,25 @@ export default function MessagesView({ incidents, selectedUserId, onSelectUser }
     return map
   }, [seeds])
 
-  const { conversations, loading, error } = useInbox(
-    true,
-    seeds.map(({ userId, userName }) => ({ userId, userName })),
-  )
   const [query, setQuery] = useState('')
-  /** In-memory read set so unread clears immediately on open (localStorage is backup). */
-  const [readUserIds, setReadUserIds] = useState<Set<number>>(() => new Set())
+  const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(() => new Set())
+
+  useEffect(() => {
+    if (!query.trim()) return
+    setCollapsedNodes(new Set())
+  }, [query])
 
   useEffect(() => {
     if (selectedUserId == null) return
-    const conversation = conversations.find(c => c.userId === selectedUserId)
-    markConversationRead(selectedUserId, conversation?.lastMessage?.created_at)
-    setReadUserIds(current => {
-      if (current.has(selectedUserId)) return current
+    const nodeId = nodeByUser.get(selectedUserId)
+    if (!nodeId) return
+    setCollapsedNodes(current => {
+      if (!current.has(nodeId)) return current
       const next = new Set(current)
-      next.add(selectedUserId)
+      next.delete(nodeId)
       return next
     })
-  }, [selectedUserId, conversations])
+  }, [selectedUserId, nodeByUser])
 
   const filtered = conversations.filter(conversation => {
     const nodeId = nodeByUser.get(conversation.userId) ?? 'unassigned'
@@ -139,16 +152,17 @@ export default function MessagesView({ incidents, selectedUserId, onSelectUser }
         }
       : null)
 
-  function selectUser(userId: number) {
-    const conversation = conversations.find(c => c.userId === userId)
-    markConversationRead(userId, conversation?.lastMessage?.created_at)
-    setReadUserIds(current => {
-      if (current.has(userId)) return current
+  function toggleGroup(nodeId: string) {
+    setCollapsedNodes(current => {
       const next = new Set(current)
-      next.add(userId)
+      if (next.has(nodeId)) next.delete(nodeId)
+      else next.add(nodeId)
       return next
     })
-    onSelectUser(userId)
+  }
+
+  function conversationUnreadCount(conversation: ConversationSummary): number {
+    return unreadByUser.get(conversation.userId) ?? 0
   }
 
   return (
@@ -167,46 +181,61 @@ export default function MessagesView({ incidents, selectedUserId, onSelectUser }
         {loading && conversations.length === 0 && <p className="chat-muted">Loading…</p>}
         {error && <p className="chat-error">{error}</p>}
         <div className="conversation-list">
-          {nodeGroups.map(group => (
-            <div key={group.nodeId} className="node-group">
-              <div className="node-group-header">
-                <strong>{group.label}</strong>
-                <span className="small-label">
-                  {group.conversations.length}{' '}
-                  {group.conversations.length === 1 ? 'person' : 'people'}
-                </span>
-              </div>
-              {group.conversations.map(conversation => {
-                const name = displayName(conversation.userId, conversation.userName)
-                const snippet = conversation.lastMessage?.text ?? 'No messages yet'
-                const when = conversation.lastMessage
-                  ? relativeTime(conversation.lastMessage.created_at)
-                  : ''
-                const isSelected = selectedUserId === conversation.userId
-                const unread =
-                  !isSelected &&
-                  !readUserIds.has(conversation.userId) &&
-                  isConversationUnread(conversation.lastMessage, conversation.userId)
-                return (
-                  <button
-                    key={conversation.userId}
-                    type="button"
-                    className={`conversation-row ${isSelected ? 'selected' : ''} ${unread ? 'unread' : ''}`}
-                    onClick={() => selectUser(conversation.userId)}
-                  >
-                    <span className="conversation-top">
-                      <span className="conversation-name">
-                        {unread ? <span className="unread-dot" aria-hidden /> : <span className="unread-dot-spacer" aria-hidden />}
-                        <strong>{name}</strong>
-                      </span>
-                      <span className="small-label">{when}</span>
+          {nodeGroups.map(group => {
+            const expanded = !collapsedNodes.has(group.nodeId)
+            const groupUnread = group.conversations.some(conversation => conversationUnreadCount(conversation) > 0)
+            return (
+              <div key={group.nodeId} className={`node-group ${expanded ? 'open' : ''}`}>
+                <button
+                  type="button"
+                  className="node-group-header"
+                  aria-expanded={expanded}
+                  aria-label={`${expanded ? 'Collapse' : 'Expand'} ${group.label}${groupUnread ? ', unread messages' : ''}`}
+                  onClick={() => toggleGroup(group.nodeId)}
+                >
+                  <span className="node-group-title">
+                    <span className={`node-chevron ${expanded ? 'open' : ''}`} aria-hidden>
+                      <ChevronIcon />
                     </span>
-                    <span className="conversation-snippet">{snippet}</span>
-                  </button>
-                )
-              })}
-            </div>
-          ))}
+                    <strong>{group.label}</strong>
+                    {groupUnread && <span className="unread-dot" aria-hidden />}
+                  </span>
+                  <span className="small-label">
+                    {group.conversations.length}{' '}
+                    {group.conversations.length === 1 ? 'person' : 'people'}
+                  </span>
+                </button>
+                {expanded &&
+                  group.conversations.map(conversation => {
+                    const name = displayName(conversation.userId, conversation.userName)
+                    const snippet = conversation.lastMessage?.text ?? 'No messages yet'
+                    const when = conversation.lastMessage
+                      ? relativeTime(conversation.lastMessage.created_at)
+                      : ''
+                    const isSelected = selectedUserId === conversation.userId
+                    const unread = conversationUnreadCount(conversation) > 0
+                    return (
+                      <button
+                        key={conversation.userId}
+                        type="button"
+                        className={`conversation-row ${isSelected ? 'selected' : ''} ${unread ? 'unread' : ''}`}
+                        data-conversation-user={conversation.userId}
+                        onClick={() => onSelectUser(conversation.userId)}
+                      >
+                        <span className="conversation-top">
+                          <span className="conversation-name">
+                            {unread ? <span className="unread-dot" aria-hidden /> : <span className="unread-dot-spacer" aria-hidden />}
+                            <strong>{name}</strong>
+                          </span>
+                          <span className="small-label">{when}</span>
+                        </span>
+                        <span className="conversation-snippet">{snippet}</span>
+                      </button>
+                    )
+                  })}
+              </div>
+            )
+          })}
           {!loading && nodeGroups.length === 0 && (
             <p className="chat-muted">
               {query.trim() ? 'No nodes or users match that search.' : 'No connected users yet.'}
@@ -228,7 +257,7 @@ export default function MessagesView({ incidents, selectedUserId, onSelectUser }
                 </span>
               </div>
             </div>
-            <ChatThread userId={active.userId} active />
+            <ChatThread userId={active.userId} active composeText={composeText} />
           </>
         ) : (
           <div className="messages-empty">
@@ -240,9 +269,19 @@ export default function MessagesView({ incidents, selectedUserId, onSelectUser }
   )
 }
 
+function ChevronIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>
+      <path d="M4.25 2.5 7.75 6l-3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
 function relativeTime(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime()
-  if (Number.isNaN(ms)) return ''
+  const then = parseServerTime(iso)
+  if (then == null) return ''
+  const ms = Date.now() - then
+  if (ms < 0) return 'now'
   const minutes = Math.round(ms / 60000)
   if (minutes < 1) return 'now'
   if (minutes < 60) return `${minutes}m`
